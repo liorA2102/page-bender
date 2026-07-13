@@ -34,6 +34,12 @@ cd page-bender/server
 ./setup.command
 ```
 
+macOS will likely say `setup.command` "cannot be opened because it is from
+an unidentified developer" — expected for a script outside the App Store,
+not a sign anything's wrong. Right-click (or Control-click) the file and
+choose **Open** instead of double-clicking; it only asks once, and clears
+itself for good once the script runs successfully.
+
 `setup.command` installs the server as a background (launchd) agent so
 it's always running, checks that Node and the Claude Code CLI are present,
 and opens Chrome + Finder to the extension folder for the last step:

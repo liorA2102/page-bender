@@ -359,6 +359,41 @@
     outline: 2px solid var(--pink-2);
     outline-offset: 2px;
   }
+  .hint {
+    font-size: 12px;
+    color: var(--text-mute);
+    margin: 10px 0 0;
+  }
+  .hint strong { color: var(--text-dim); font-weight: 700; }
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+    font-size: 12.5px;
+    color: var(--text-mute);
+  }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .status-dot.status-pending {
+    background: var(--text-mute);
+    animation: pulse-dot 1.6s ease-in-out infinite;
+  }
+  .status-dot.status-ok {
+    background: linear-gradient(135deg, var(--pink-2), var(--pink-3));
+    box-shadow: 0 0 8px rgba(255, 61, 146, .6);
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: .35; }
+    50% { opacity: .9; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .status-dot.status-pending { animation: none; opacity: .6; }
+  }
 
   /* ---------- disclosure ---------- */
   .disclosure {
@@ -448,7 +483,7 @@
       <a class="btn-primary" href="https://github.com/liorA2102/page-bender/archive/refs/heads/main.zip" download>
         <span>&#8681;</span> Download Page Bender
       </a>
-      <a class="btn-ghost" href="#get-started">How To Setup</a>
+      <a class="btn-ghost" href="#get-started">See how it works</a>
     </div>
     <div class="cta-caption">macOS &middot; Chrome &middot; ~5 minutes to set up</div>
   </section>
@@ -536,6 +571,11 @@
             <span>./setup.command</span>
             <button type="button" data-copy="./setup.command">Copy</button>
           </div>
+          <p class="hint">macOS will likely say it can't verify the developer &mdash; that's expected for a script outside the App Store. Right-click (or Control-click) the file and choose <strong>Open</strong> instead of double-clicking; it only asks once.</p>
+          <div class="status-row" id="server-status">
+            <span class="status-dot status-pending"></span>
+            <span class="status-text">Waiting for the server to start&hellip;</span>
+          </div>
         </div>
       </div>
       <div class="step">
@@ -586,6 +626,29 @@
       });
     });
   });
+
+  (function pollLocalServer() {
+    var dot = document.querySelector('#server-status .status-dot');
+    var text = document.querySelector('#server-status .status-text');
+    if (!dot || !text) return;
+    var detected = false;
+    function setState(isUp) {
+      if (isUp === detected) return;
+      detected = isUp;
+      dot.classList.toggle('status-pending', !isUp);
+      dot.classList.toggle('status-ok', isUp);
+      text.textContent = isUp
+        ? 'Server detected — running at 127.0.0.1:8790'
+        : 'Waiting for the server to start…';
+    }
+    function check() {
+      fetch('http://127.0.0.1:8790/mock-toolbar.js', { mode: 'no-cors', cache: 'no-store' })
+        .then(function () { setState(true); })
+        .catch(function () { setState(false); });
+    }
+    check();
+    setInterval(check, 2000);
+  })();
 </script>
 
 </body>

@@ -11,8 +11,17 @@
 # and proven beats clever and broken.)
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXTENSION_DIR="$(cd "$DIR/../extension" && pwd)"
+REPO_DIR="$(cd "$DIR/.." && pwd)"
+EXTENSION_DIR="$DIR/../extension"
+EXTENSION_DIR="$(cd "$EXTENSION_DIR" && pwd)"
 PLIST="$HOME/Library/LaunchAgents/com.aura.pagemock.plist"
+
+# Downloaded/cloned files carry a Gatekeeper quarantine flag, which is why
+# macOS warns "unidentified developer" the first time this file is opened
+# (fixed by right-click > Open once, per the README/landing page). Clearing
+# it here for the whole repo means uninstall.command and any re-run of this
+# script never need that workaround again after the first successful run.
+xattr -dr com.apple.quarantine "$REPO_DIR" 2>/dev/null || true
 
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js isn't installed — install it first (e.g. \`brew install node\`), then run this again."
