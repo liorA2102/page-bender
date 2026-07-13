@@ -307,6 +307,48 @@
     let bodyEl = baked;
     let stageCss = "";
     if (root !== document.body) {
+      // A section capture clones ONLY the picked element — whatever parent
+      // grid/flex container was actually giving it its real width (a
+      // percentage, a flex-basis, a grid track share) never comes along.
+      // Observed live on AppsFlyer's login page: the form's column was
+      // "50% of a 2000px row" via MuiGrid2's grid-xs-6 class, but with no
+      // parent grid row in the staged output for that percentage to resolve
+      // against, it collapsed to a narrow, mobile-looking width instead.
+      // Pinning the ACTUAL observed width as an inline style — measured
+      // from the live element before it's cloned out of that context —
+      // wins over any percentage/flex-basis class rule regardless of
+      // specificity, so the staged card always reproduces the real,
+      // desktop-observed size. General fix: this has nothing to do with
+      // AppsFlyer, MUI, or any particular layout system — it's true of any
+      // element whose size depends on an ancestor this capture mode
+      // deliberately excludes.
+      const rect = root.getBoundingClientRect();
+      baked.style.width = `${Math.round(rect.width)}px`;
+      // Same "missing ancestor" problem as the width fix above, but for
+      // background color instead of layout: plenty of components (this
+      // table included) don't paint their own background at all — they're
+      // transparent and rely on some ancestor (often all the way up at
+      // <body>) to actually provide the color behind them. A section
+      // capture discards every real ancestor, so the frame below used to
+      // just hardcode white, assuming most captured components are opaque.
+      // Observed live on Intercom's All Messages table: its dark-mode text
+      // color WAS correct (near-white, matching the real dark background
+      // this table normally sits on), but with no real ancestor left to
+      // supply that dark background, our own hardcoded white frame showed
+      // through instead — near-white text on white, nearly invisible.
+      // Walking up from the real (unbaked) element to find whichever
+      // ancestor actually paints a non-transparent background reproduces
+      // the true backdrop regardless of whether the real page is light or
+      // dark themed.
+      const effectiveBg = (() => {
+        let node = root;
+        while (node) {
+          const bg = getComputedStyle(node).backgroundColor;
+          if (bg && bg !== "transparent" && bg !== "rgba(0, 0, 0, 0)") return bg;
+          node = node.parentElement;
+        }
+        return "#fff";
+      })();
       const descriptor = root.tagName.toLowerCase() + (root.classList[0] ? `.${root.classList[0]}` : "");
       const fontUri = await embedOwnFont();
       const fontFace = fontUri
@@ -362,7 +404,7 @@
           background: radial-gradient(circle at 28% 30%, rgba(255,110,199,.55), transparent 55%),
                       radial-gradient(circle at 76% 74%, rgba(255,45,120,.5), transparent 55%);
           filter: blur(40px); opacity: .75; }
-        .pbx-section-frame { position: relative; border-radius: 20px; overflow: hidden; background: #fff;
+        .pbx-section-frame { position: relative; border-radius: 20px; overflow: hidden; background: ${effectiveBg};
           box-shadow: 0 30px 90px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06); }
       `;
     }
@@ -622,13 +664,31 @@
   // table's header row) fired an immediate capture of that tiny element
   // instead of the intended full page, with no way to tell beforehand what
   // was about to be captured. Requiring a second click on the SAME target
-  // turns that stray first click into a harmless "aim" instead. ----------
+  // turns that stray first click into a harmless "aim" instead.
+  //
+  // Separately (observed live on Intercom's All Messages table): a single
+  // click can't reliably tell "the row" from "the row's wrapper's padding"
+  // from "the whole content column" — elementFromPoint just returns whatever
+  // is topmost at that pixel, and generous padding/gap/margin on a wrapper
+  // is hit-tested to the WRAPPER, not whatever child it visually surrounds.
+  // This has nothing to do with any one site or CSS methodology (Tailwind's
+  // atomic classes just make it worse, since the badge's tag+first-class
+  // label carries no semantic hint either way — "div.h-full" looks the same
+  // whether it's a tiny icon wrapper or the entire page). Two general,
+  // page-agnostic fixes below: the armed outline now shows live pixel
+  // dimensions so an oversized pick is obvious before confirming, and
+  // ArrowUp/ArrowDown walk the armed target up/down the ancestor chain so a
+  // wrong pick can be corrected without needing a pixel-perfect re-click.
+  // ----------
   let sectionSelectMode = false;
-  let armedEl = null; // clicked once, awaiting a confirming second click on itself
+  // Stack of elements from the original click (index 0) up through however
+  // many ancestors ArrowUp has climbed — armedStack[armedStack.length - 1]
+  // is always the current armed target; ArrowDown pops back down.
+  let armedStack = [];
 
   function setSectionSelectMode(on) {
     sectionSelectMode = on;
-    armedEl = null;
+    armedStack = [];
     sectionBtn.classList.toggle("pm-on", on);
     hoverBox.style.display = "none";
     hoverBadge.style.display = "none";
@@ -636,7 +696,10 @@
   }
 
   // Shared by both the free-following hover box and the frozen "armed"
-  // outline — same visual, just driven by a different element/label.
+  // outline — same visual, just driven by a different element/label. Always
+  // appends live pixel dimensions: a class name or tag alone can't tell you
+  // how much you're about to grab, but "412×1866" makes an oversized pick
+  // obvious at a glance, on any page, regardless of how it's styled.
   function paintHoverAt(el, label) {
     const r = el.getBoundingClientRect();
     hoverBox.style.display = "block";
@@ -644,7 +707,7 @@
     hoverBox.style.top = `${r.top}px`;
     hoverBox.style.width = `${r.width}px`;
     hoverBox.style.height = `${r.height}px`;
-    hoverBadge.textContent = label;
+    hoverBadge.textContent = `${label} · ${Math.round(r.width)}×${Math.round(r.height)}`;
     hoverBadge.style.display = "block";
     hoverBadge.style.left = `${r.left}px`;
     hoverBadge.style.top = `${Math.max(0, r.top - 24)}px`;
@@ -657,8 +720,14 @@
     return el.tagName.toLowerCase() + cls;
   }
 
+  function paintArmed() {
+    const el = armedStack[armedStack.length - 1];
+    const hint = armedStack.length > 1 ? "↑/↓ to resize, click again to capture, Esc to cancel" : "click again to capture, ↑ for parent, Esc to cancel";
+    paintHoverAt(el, `${describeSectionTarget(el)} — ${hint}`);
+  }
+
   function onSectionMouseMove(e) {
-    if (!sectionSelectMode || armedEl) return; // frozen on the armed target until confirmed or cancelled
+    if (!sectionSelectMode || armedStack.length) return; // frozen on the armed target until confirmed or cancelled
     // Shadow DOM event retargeting means a listener OUTSIDE the shadow tree
     // (this one, on `document`) sees e.target as `host` itself for anything
     // happening inside our own panel — so this one check covers the whole
@@ -673,20 +742,42 @@
     e.preventDefault();
     e.stopPropagation();
     const el = e.target;
-    if (armedEl === el) {
-      // second click on the same element — confirmed, capture for real
+    if (armedStack.length && armedStack[armedStack.length - 1] === el) {
+      // second click on the same (possibly resized) target — confirmed
+      const target = armedStack[armedStack.length - 1];
       setSectionSelectMode(false);
-      runCapture(el);
+      runCapture(target);
       return;
     }
     // first click, or a click on a different element while one was already
-    // armed — (re-)aim only, nothing captured yet
-    armedEl = el;
-    paintHoverAt(el, `${describeSectionTarget(el)} — click again to capture, Esc to cancel`);
+    // armed — (re-)aim fresh, nothing captured yet
+    armedStack = [el];
+    paintArmed();
   }
 
   function onSectionKeydown(e) {
-    if (sectionSelectMode && e.key === "Escape") setSectionSelectMode(false);
+    if (!sectionSelectMode) return;
+    if (e.key === "Escape") { setSectionSelectMode(false); return; }
+    if (!armedStack.length) return;
+    if (e.key === "ArrowUp") {
+      // Climb to the parent — bounded at <body> so this can't walk past it
+      // into <html>, which is never a meaningful thing to capture as a
+      // "section" (that's just a full-page capture via the main pill).
+      const current = armedStack[armedStack.length - 1];
+      const parent = current.parentElement;
+      if (parent && current !== document.body) {
+        e.preventDefault();
+        armedStack.push(parent);
+        paintArmed();
+      }
+    } else if (e.key === "ArrowDown") {
+      // Back down to wherever we climbed from — no-op at the original pick.
+      if (armedStack.length > 1) {
+        e.preventDefault();
+        armedStack.pop();
+        paintArmed();
+      }
+    }
   }
 
   document.addEventListener("mousemove", onSectionMouseMove, true);
