@@ -237,6 +237,52 @@
     .stages { align-items: stretch; }
   }
 
+  /* ---------- features ---------- */
+  section.features { padding: 44px 0 8px; }
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+  }
+  @media (max-width: 640px) {
+    .feature-grid { grid-template-columns: 1fr; }
+  }
+  .feature-card {
+    position: relative;
+    background: linear-gradient(180deg, var(--ink-1), var(--ink-2));
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px 20px;
+  }
+  .feature-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 16px;
+    background: radial-gradient(circle at 80% 0%, rgba(255, 110, 199, .1), transparent 60%);
+    pointer-events: none;
+  }
+  .feature-card h3 {
+    font-size: 14.5px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 7px;
+  }
+  .feature-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--pink-2), var(--pink-3));
+    flex: none;
+  }
+  .feature-card p {
+    font-size: 13px;
+    color: var(--text-mute);
+    margin: 0;
+  }
+
   /* ---------- get started ---------- */
   section.get-started { padding: 56px 0 8px; }
   .steps { display: flex; flex-direction: column; gap: 12px; }
@@ -379,7 +425,7 @@
 <main class="wrap">
   <section class="hero">
     <div class="eyebrow">Private tool for teammates</div>
-    <h1 class="headline">Freeze any page.<br /><em>Bend it</em> into what it should be.</h1>
+    <h1 class="headline"><em>Bend</em> any webpage into your ultimate prototype.</h1>
     <p class="subhead">
       Capture a live screen exactly as it renders, then reshape it with Claude&nbsp;&mdash;
       new layouts, new copy, new components &mdash; without touching the real app or waiting on a sprint.
@@ -391,6 +437,39 @@
       <a class="btn-ghost" href="#get-started">See how it works</a>
     </div>
     <div class="cta-caption">macOS &middot; Chrome &middot; ~5 minutes to set up</div>
+  </section>
+
+  <section class="features">
+    <div class="section-head">
+      <div class="eyebrow">What you get</div>
+      <h2>More than a screenshot tool</h2>
+    </div>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <h3><span class="feature-dot"></span>Real DOM, real CSS</h3>
+        <p>Copies the actual markup and stylesheets &mdash; not a screenshot, not a per-element style bake that quietly stops adding up.</p>
+      </div>
+      <div class="feature-card">
+        <h3><span class="feature-dot"></span>Capture just one section</h3>
+        <p>Hover, click, done. Grab a single component instead of freezing the whole page.</p>
+      </div>
+      <div class="feature-card">
+        <h3><span class="feature-dot"></span>Edit in plain language</h3>
+        <p>Describe the change. Claude edits the real markup in place, with full context of what's already there.</p>
+      </div>
+      <div class="feature-card">
+        <h3><span class="feature-dot"></span>Undo, redo, quick-edit</h3>
+        <p>Five-slot undo/redo plus a color and radius panel for fast tweaks without writing a prompt.</p>
+      </div>
+      <div class="feature-card">
+        <h3><span class="feature-dot"></span>Clean handoff</h3>
+        <p>Export an accurate diff for engineers, or download the finished HTML on its own.</p>
+      </div>
+      <div class="feature-card">
+        <h3><span class="feature-dot"></span>Always running</h3>
+        <p>A background server, not a script to remember. Click the extension and it's ready.</p>
+      </div>
+    </div>
   </section>
 
   <section class="pipeline">
