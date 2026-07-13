@@ -1,0 +1,5 @@
+node_modules/
+mocks/*
+capture/*
+.DS_Store
+*.log

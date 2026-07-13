@@ -1,0 +1,14 @@
+{
+  "name": "page-bender-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local companion server for the Page Bender extension. Captures a page once into a standalone HTML file, then lets a full-tool Claude Agent SDK session edit that file directly.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.201",
+    "diff": "^7.0.0"
+  }
+}
