@@ -734,13 +734,28 @@
       }
       .pm-chip.pm-image span { align-self: center; }
 
-      .pm-input { width: 100%; background: transparent; border: none; outline: none; resize: none;
-        max-height: 140px; color: #ffffff; font: 400 15px/1.5 'Plus Jakarta Sans', -apple-system, system-ui, sans-serif;
-        padding: 0 0 12px; }
+      /* !important throughout: this <style> is injected straight into the
+         captured page's own DOM (no Shadow DOM/iframe isolation), and that
+         page's REAL stylesheet is preserved verbatim — a captured site's own
+         global textarea/form reset can otherwise out-cascade a plain class
+         selector here and repaint this field with the host page's own
+         background/border instead of ours. */
+      /* -webkit-appearance/appearance: none opts the textarea out of native
+         form-control rendering entirely — without it, Chromium can still
+         draw its own default focus ring (a rounded highlight-color frame)
+         on top of an author "outline: none", since that ring belongs to the
+         native control chrome, not the CSS outline property. */
+      .pm-input { width: 100%; background: transparent !important; border: none !important; outline: none !important;
+        appearance: none !important; -webkit-appearance: none !important; box-shadow: none !important;
+        resize: none; max-height: 140px; color: #ffffff !important;
+        font: 400 15px/1.5 'Plus Jakarta Sans', -apple-system, system-ui, sans-serif;
+        padding: 2px 2px 12px; }
+      .pm-input:focus, .pm-input:focus-visible { outline: none !important; box-shadow: none !important; border: none !important; }
       .pm-input::placeholder { color: var(--pm-text-mute); }
       .pm-status { font-size: 12px; color: var(--pm-text-mute); min-height: 15px; margin-bottom: 10px; line-height: 1.4; transition: color .15s ease; }
       .pm-card.pm-thinking .pm-status { color: var(--pm-status); }
-      .pm-card.pm-thinking .pm-input { opacity: .4; pointer-events: none; }
+      .pm-card.pm-thinking .pm-input { pointer-events: none; animation: pm-input-pulse 1.6s ease-in-out infinite; }
+      @keyframes pm-input-pulse { 0%, 100% { opacity: .35; } 50% { opacity: .65; } }
       /* Hidden outright, not just dimmed — every tool in this row is
          already pointer-events:none while thinking (nothing to click), and
          showing all 5 of them dimmed with no visible scrollbar
@@ -805,6 +820,9 @@
         color: #1c0f18; background: linear-gradient(135deg, var(--pm-pink), var(--pm-pink-3));
         padding: 6px 11px; border-radius: 999px; }
       .pm-update-btn:disabled { opacity: .55; cursor: default; }
+      .pm-fidelity-skip { all: unset; cursor: pointer; font: 600 11px 'Plus Jakarta Sans', sans-serif;
+        color: var(--pm-text-mute); padding: 6px 8px; }
+      .pm-fidelity-skip:hover { color: var(--pm-text-dim); }
     </style>
     <div id="pm-scrim"></div>
     <div class="pm-pill" id="pm-pill-open">
@@ -828,12 +846,20 @@
         <span class="pm-update-text" id="pm-update-text">Update available</span>
         <button class="pm-update-btn" id="pm-update-btn">Update</button>
       </div>
+      <div id="pm-fidelity-banner" class="pm-update-banner">
+        <span class="pm-update-text">${ICONS.sparkles} Enhance fidelity against the captured screenshot?</span>
+        <span style="display:flex; gap:2px; flex:none;">
+          <button class="pm-fidelity-skip" id="pm-fidelity-skip">Skip</button>
+          <button class="pm-update-btn" id="pm-fidelity-enhance">Enhance</button>
+        </span>
+      </div>
       <div id="pm-chip" class="pm-chip" style="display:none;">
         <img id="pm-chip-thumb" />
         <span id="pm-chip-text"></span>
         <a id="pm-chip-clear" href="#">clear</a>
       </div>
-      <textarea class="pm-input" id="pm-instruction" rows="1" placeholder="Describe a change… (Cmd/Ctrl+Enter to send)"></textarea>
+      <textarea class="pm-input" id="pm-instruction" rows="1" placeholder="Describe a change… (Cmd/Ctrl+Enter to send)"
+        spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
       <div id="pm-status" class="pm-status">idle</div>
       <div class="pm-row">
         <div class="pm-tools">
@@ -1164,11 +1190,48 @@
     });
   });
 
-  // ---------- background pass polling (the capture-time fidelity pass runs
-  // detached server-side now — see PLAN.md — so THIS page, not the
-  // extension, is what waits for it and reflects progress) ----------
+  // ---------- fidelity pass: opt-in trigger + background pass polling ----------
+  //
+  // Used to run automatically right after every capture; most captures
+  // didn't need it and it was getting reflexively Stopped, so it's now only
+  // ever started from here, via the one-time banner — never on page load by
+  // itself, and there's no other entry point: once it's been run or
+  // skipped, that's the final word for this mock, by design (no permanent
+  // re-triggerable button). The pass itself still runs detached
+  // server-side (see PLAN.md), so THIS page, not the extension, is what
+  // waits for it and reflects progress.
 
   const TOAST_KEY = `pm-toast-${slug}`;
+  const fidelityBanner = toolbar.querySelector("#pm-fidelity-banner");
+  const fidelityEnhanceBtn = toolbar.querySelector("#pm-fidelity-enhance");
+  const fidelitySkipBtn = toolbar.querySelector("#pm-fidelity-skip");
+
+  function hideFidelityBanner() { fidelityBanner.classList.remove("pm-show"); }
+
+  async function startFidelityPass() {
+    hideFidelityBanner();
+    let resp;
+    try {
+      resp = await fetch("/fidelity-start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug }),
+      }).then((r) => r.json());
+    } catch (err) {
+      resp = { error: err.message };
+    }
+    if (!resp || resp.error) { setStatus(`couldn't start fidelity check: ${resp && resp.error}`); return; }
+    startAgentPoll();
+  }
+  fidelityEnhanceBtn.addEventListener("click", startFidelityPass);
+  fidelitySkipBtn.addEventListener("click", () => {
+    hideFidelityBanner();
+    fetch("/fidelity-dismiss", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug }),
+    }).catch(() => {}); // best-effort — worst case the banner just reappears next load
+  });
 
   function startAgentPoll() {
     openCard();
@@ -1208,6 +1271,9 @@
       sessionStorage.removeItem(TOAST_KEY);
       openCard();
       setStatus(toast);
+    } else if (window.__PM_FIDELITY_SHOW_BANNER) {
+      openCard();
+      fidelityBanner.classList.add("pm-show");
     }
   }
 

@@ -37,6 +37,7 @@ let versionCache = { checkedAt: 0, currentSha: null, latestSha: null, latestMess
 
 const ORIGINAL_FILE = "original.html";
 const WORKING_FILE = "working.html";
+const SCREENSHOT_FILE = "capture-screenshot.txt";
 
 // One in-flight agent run per slug, at most — covers both the capture-time
 // fidelity pass and a manual /prompt call with a single mechanism, since a
@@ -138,6 +139,18 @@ function friendlyDownloadName(dir, slug) {
   return slug;
 }
 
+function readMeta(dir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, "meta.json"), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeMetaPatch(dir, patch) {
+  fs.writeFileSync(path.join(dir, "meta.json"), JSON.stringify({ ...readMeta(dir), ...patch }, null, 2), "utf8");
+}
+
 // Resolves a slug to a real, contained directory under MOCKS_DIR — refuses
 // anything that would escape it (e.g. a slug containing "..").
 function resolveProjectDir(slug) {
@@ -171,7 +184,7 @@ async function handleCapture(req, res) {
   fs.writeFileSync(path.join(dir, WORKING_FILE), html, "utf8");
   fs.writeFileSync(
     path.join(dir, "meta.json"),
-    JSON.stringify({ title: title || "", url: url || "", capturedAt: new Date().toISOString() }, null, 2)
+    JSON.stringify({ title: title || "", url: url || "", capturedAt: new Date().toISOString(), fidelityStarted: false }, null, 2)
   );
 
   console.log(`[capture] ${slug} (${html.length} bytes) from ${url || "unknown url"}`);
@@ -184,15 +197,13 @@ async function handleCapture(req, res) {
     }
   }
 
-  // Deliberately NOT awaited: the fidelity pass can take minutes on a real
-  // page, and the extension's background service worker (MV3, capped at
-  // ~5 minutes of continuous work by Chrome) would get killed mid-request
-  // long before a slow pass finishes, surfacing as a false "capture failed"
-  // in the extension even on runs that succeed server-side (see PLAN.md).
-  // Responding immediately with the raw capture and letting the pass run
-  // detached, tracked in activeQueries, is what actually fixes that — the
-  // mock page itself (not the extension) polls /agent-status for progress.
-  if (screenshot) runFidelityPass(dir, slug, screenshot);
+  // The fidelity pass no longer runs automatically here — most captures
+  // don't need it, and the user was reflexively hitting Stop on it most of
+  // the time. Just persist the screenshot (it only lived transiently in the
+  // agent's temp-image file before, cleaned up as soon as a pass finished)
+  // so the toolbar can offer it as an opt-in action later — see
+  // handleFidelityStart, triggered from the mock page's own UI.
+  if (screenshot) fs.writeFileSync(path.join(dir, SCREENSHOT_FILE), screenshot, "utf8");
 
   sendJson(res, 200, { slug, previewUrl: `http://${HOST}:${PORT}/mock/${slug}/${WORKING_FILE}` });
 }
@@ -645,6 +656,40 @@ function handleAgentCancel(req, res) {
   });
 }
 
+// User-triggered now (see the note in handleCapture on why this stopped
+// running automatically) — reads back the screenshot persisted at capture
+// time and kicks off the same detached runFidelityPass the auto-run used to
+// call directly. Marks fidelityStarted so injectToolbar stops offering the
+// one-time banner on future loads — by design there's no other entry point,
+// so once it's run (or skipped, see handleFidelityDismiss) that's final for
+// this mock.
+async function handleFidelityStart(req, res) {
+  const { slug } = JSON.parse(await readBody(req));
+  if (!slug) return sendJson(res, 400, { error: "missing slug" });
+  const dir = resolveProjectDir(slug);
+  const screenshotPath = path.join(dir, SCREENSHOT_FILE);
+  if (!fs.existsSync(screenshotPath)) return sendJson(res, 400, { error: "no screenshot captured for this mock" });
+  const existing = activeQueries.get(slug);
+  if (existing && existing.status === "running") return sendJson(res, 200, { ok: true, status: "running" });
+  const screenshot = fs.readFileSync(screenshotPath, "utf8");
+  writeMetaPatch(dir, { fidelityStarted: true });
+  runFidelityPass(dir, slug, screenshot); // deliberately not awaited — same detached pattern handleCapture used
+  sendJson(res, 200, { ok: true, started: true });
+}
+
+// "Skip" on the one-time banner — records the same fidelityStarted flag as
+// an actual run, purely so the banner doesn't keep nagging on reload. There
+// is deliberately no other way to trigger fidelity for this mock afterward.
+function handleFidelityDismiss(req, res) {
+  return readBody(req).then((raw) => {
+    const { slug } = JSON.parse(raw);
+    if (!slug) return sendJson(res, 400, { error: "missing slug" });
+    const dir = resolveProjectDir(slug);
+    writeMetaPatch(dir, { fidelityStarted: true });
+    sendJson(res, 200, { ok: true });
+  });
+}
+
 // Serves the RAW working.html (no toolbar injection — that only happens in
 // serveStatic, at HTTP-serve time, never on disk) as a forced download, for
 // the toolbar's "HTML Export" option — a plain copy of the prototype file
@@ -679,7 +724,16 @@ function injectToolbar(html, slug) {
   // mock-toolbar.js reads document.body.innerHTML for its own history
   // snapshots/saves, neither of these tags is still there to be captured.
   const pending = activeQueries.get(slug)?.status === "running";
-  const script = `<script>window.__PM_SLUG=${JSON.stringify(slug)};window.__PM_AGENT_PENDING=${JSON.stringify(pending)};document.currentScript.remove();</script>\n<script src="/mock-toolbar.js"></script>\n`;
+  let dir = null;
+  try {
+    dir = resolveProjectDir(slug);
+  } catch {
+    // unresolvable slug — fidelity flags below just fall back to "unavailable"
+  }
+  const hasScreenshot = Boolean(dir && fs.existsSync(path.join(dir, SCREENSHOT_FILE)));
+  const fidelityStarted = dir ? Boolean(readMeta(dir).fidelityStarted) : true;
+  const showFidelityBanner = hasScreenshot && !fidelityStarted && !pending;
+  const script = `<script>window.__PM_SLUG=${JSON.stringify(slug)};window.__PM_AGENT_PENDING=${JSON.stringify(pending)};window.__PM_FIDELITY_SHOW_BANNER=${JSON.stringify(showFidelityBanner)};document.currentScript.remove();</script>\n<script src="/mock-toolbar.js"></script>\n`;
   if (/<\/body>/i.test(html)) return html.replace(/<\/body>/i, `${script}</body>`);
   return html + script;
 }
@@ -839,6 +893,12 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "POST" && url.pathname === "/agent-cancel") {
     return handleAgentCancel(req, res).catch((err) => sendJson(res, 500, { error: err.message }));
+  }
+  if (req.method === "POST" && url.pathname === "/fidelity-start") {
+    return handleFidelityStart(req, res).catch((err) => sendJson(res, 500, { error: err.message }));
+  }
+  if (req.method === "POST" && url.pathname === "/fidelity-dismiss") {
+    return handleFidelityDismiss(req, res).catch((err) => sendJson(res, 500, { error: err.message }));
   }
   if (req.method === "GET" && url.pathname === "/export-html") {
     return handleExportHtml(req, res, url.searchParams.get("slug"));
