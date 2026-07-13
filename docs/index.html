@@ -190,57 +190,9 @@
     color: var(--text-mute);
   }
 
-  /* ---------- pipeline ---------- */
-  section.pipeline { padding: 44px 0 8px; }
   .section-head { text-align: center; margin-bottom: 34px; }
   .section-head .eyebrow { margin-bottom: 10px; }
   .section-head h2 { font-size: clamp(1.4rem, 3vw, 1.8rem); font-weight: 700; }
-
-  .stages {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 14px;
-  }
-  @media (max-width: 640px) {
-    .stages { grid-template-columns: 1fr; }
-  }
-  .stage {
-    position: relative;
-    background: linear-gradient(180deg, var(--ink-1), var(--ink-2));
-    border: 1px solid var(--border);
-    border-radius: 18px;
-    padding: 22px 20px;
-  }
-  .stage::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: 18px;
-    background: radial-gradient(circle at 20% 0%, rgba(255, 110, 199, .12), transparent 60%);
-    pointer-events: none;
-  }
-  .stage-index {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--pink-2);
-    letter-spacing: .04em;
-  }
-  .stage h3 {
-    font-size: 15.5px;
-    font-weight: 700;
-    margin-top: 8px;
-  }
-  .stage p {
-    font-size: 13.5px;
-    color: var(--text-mute);
-    margin: 8px 0 0;
-  }
-  .stage-arrow {
-    display: none;
-  }
-  @media (min-width: 641px) {
-    .stages { align-items: stretch; }
-  }
 
   /* ---------- features ---------- */
   section.features { padding: 44px 0 8px; }
@@ -483,7 +435,7 @@
       <a class="btn-primary" href="https://github.com/liorA2102/page-bender/archive/refs/heads/main.zip" download>
         <span>&#8681;</span> Download Page Bender
       </a>
-      <a class="btn-ghost" href="#get-started">See how it works</a>
+      <a class="btn-ghost" href="#get-started">How To Setup</a>
     </div>
     <div class="cta-caption">macOS &middot; Chrome &middot; ~5 minutes to set up</div>
   </section>
@@ -517,30 +469,6 @@
       <div class="feature-card">
         <h3><span class="feature-dot"></span>Always running</h3>
         <p>A background server, not a script to remember. Click the extension and it's ready.</p>
-      </div>
-    </div>
-  </section>
-
-  <section class="pipeline">
-    <div class="section-head">
-      <div class="eyebrow">How To Set Up</div>
-      <h2>One page, three moves</h2>
-    </div>
-    <div class="stages">
-      <div class="stage">
-        <div class="stage-index">01</div>
-        <h3>Capture</h3>
-        <p>Click the extension on any live page. It freezes the real DOM and real CSS into one standalone file &mdash; no auth, no live JS.</p>
-      </div>
-      <div class="stage">
-        <div class="stage-index">02</div>
-        <h3>Prototype</h3>
-        <p>Describe the change in plain language. Claude edits the markup directly, in place, with full context of what's already there.</p>
-      </div>
-      <div class="stage">
-        <div class="stage-index">03</div>
-        <h3>Export</h3>
-        <p>Pull a clean diff for handoff, or download the finished HTML on its own &mdash; ready to share or build from.</p>
       </div>
     </div>
   </section>
