@@ -17,15 +17,23 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createTwoFilesPatch } from "diff";
 
 const PORT = 8790;
 const HOST = "127.0.0.1";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.join(__dirname, "..");
 const MOCKS_DIR = path.join(__dirname, "..", "mocks");
 const PUBLIC_DIR = path.join(__dirname, "public");
 fs.mkdirSync(MOCKS_DIR, { recursive: true });
+
+const execFileP = promisify(execFile);
+const GITHUB_REPO = "liorA2102/page-bender";
+const VERSION_CACHE_TTL_MS = 15 * 60 * 1000;
+let versionCache = { checkedAt: 0, currentSha: null, latestSha: null, latestMessage: null, error: null };
 
 const ORIGINAL_FILE = "original.html";
 const WORKING_FILE = "working.html";
@@ -720,6 +728,76 @@ function sendJson(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
+async function refreshVersionCache() {
+  try {
+    const [{ stdout }, ghRes] = await Promise.all([
+      execFileP("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT }),
+      fetch(`https://api.github.com/repos/${GITHUB_REPO}/commits/main`, {
+        headers: { "User-Agent": "page-bender-update-check", Accept: "application/vnd.github+json" },
+      }).then((r) => {
+        if (!r.ok) throw new Error(`GitHub API returned ${r.status}`);
+        return r.json();
+      }),
+    ]);
+    versionCache = {
+      checkedAt: Date.now(),
+      currentSha: stdout.trim(),
+      latestSha: ghRes.sha,
+      latestMessage: (ghRes.commit && ghRes.commit.message || "").split("\n")[0] || null,
+      error: null,
+    };
+  } catch (err) {
+    // Keep whatever sha values we last had (e.g. offline, GitHub rate limit)
+    // rather than blanking them out — a stale "update available" is a
+    // harmless false-stay-quiet, but losing the last known state entirely
+    // would flip an already-flagged update back to "unknown" on every blip.
+    versionCache = { ...versionCache, checkedAt: Date.now(), error: err.message };
+  }
+  return versionCache;
+}
+
+async function handleVersionCheck(req, res) {
+  if (Date.now() - versionCache.checkedAt > VERSION_CACHE_TTL_MS) await refreshVersionCache();
+  const { currentSha, latestSha, latestMessage, error } = versionCache;
+  sendJson(res, 200, {
+    ok: !error,
+    error: error || undefined,
+    currentSha,
+    latestSha,
+    updateAvailable: Boolean(currentSha && latestSha && currentSha !== latestSha),
+    latestMessage,
+  });
+}
+
+// Pulls the repo in place and, if the update pulled in server dependency
+// changes, reinstalls them — then exits. The launchd job (KeepAlive: true)
+// relaunches the process immediately, so this IS the "restart" step; there's
+// no separate restart command to run. Only exits on a successful pull/install
+// — a failed pull (diverged branch, local edits) reports the error and
+// leaves the running server untouched instead of killing a working process.
+async function handleUpdate(req, res) {
+  const lockPath = path.join(REPO_ROOT, "server", "package-lock.json");
+  const before = fs.existsSync(lockPath) ? fs.readFileSync(lockPath, "utf8") : null;
+  try {
+    await execFileP("git", ["pull", "--ff-only"], { cwd: REPO_ROOT });
+  } catch (err) {
+    return sendJson(res, 500, { ok: false, error: `git pull failed: ${err.message}` });
+  }
+  try {
+    const after = fs.existsSync(lockPath) ? fs.readFileSync(lockPath, "utf8") : null;
+    if (before !== after) {
+      await execFileP("npm", ["install"], { cwd: path.join(REPO_ROOT, "server") });
+    }
+  } catch (err) {
+    return sendJson(res, 500, { ok: false, error: `npm install failed: ${err.message}` });
+  }
+  versionCache = { checkedAt: 0, currentSha: null, latestSha: null, latestMessage: null, error: null };
+  sendJson(res, 200, { ok: true, restarting: true });
+  // Give the response above time to actually flush to the socket before the
+  // process disappears out from under the connection.
+  setTimeout(() => process.exit(0), 300);
+}
+
 const server = http.createServer((req, res) => {
   const origin = req.headers.origin;
   cors(res, origin);
@@ -764,6 +842,12 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "GET" && url.pathname === "/export-html") {
     return handleExportHtml(req, res, url.searchParams.get("slug"));
+  }
+  if (req.method === "GET" && url.pathname === "/version-check") {
+    return handleVersionCheck(req, res).catch((err) => sendJson(res, 500, { error: err.message }));
+  }
+  if (req.method === "POST" && url.pathname === "/update") {
+    return handleUpdate(req, res).catch((err) => sendJson(res, 500, { error: err.message }));
   }
   return notFound(res);
 });

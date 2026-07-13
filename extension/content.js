@@ -12,12 +12,27 @@
   }
   window.__pageMockInjected = true;
 
+  // background.js injects this file into every frame (allFrames: true), not
+  // just the top one — needed so a same-tab <iframe> can bake ITSELF when
+  // asked (see requestFrameBake below). Only the top frame gets the visible
+  // pill/section-select UI; a sub-frame instance stays invisible and only
+  // ever responds to a bake request from its parent.
+  const isTopFrame = window.top === window.self;
+
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  function absolutize(url) {
-    try { return new URL(url, location.href).href; } catch { return url; }
+  // Used by captureBakedHtml's section-capture badge (runs in every frame)
+  // AND by the top-frame-only pill/select-button icons further down — has
+  // to live out here, not inside the isTopFrame block, or captureBakedHtml
+  // can't see it (a block-scoped const isn't visible outside its block no
+  // matter what order things execute in).
+  const svgIcon = (inner, size = 15) =>
+    `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
+
+  function absolutize(url, base = location.href) {
+    try { return new URL(url, base).href; } catch { return url; }
   }
 
   // Rewrites every url(...) in captured CSS text to an absolute URL, EXCEPT
@@ -27,9 +42,11 @@
   // "https://original-site.com/page#id" breaks it once the mock is opened
   // from a different origin/path (observed live: a chart's stroke
   // referenced its gradient this way, so the line rendered with axes but no
-  // visible stroke at all).
-  function absolutizeCssUrls(css) {
-    return css.replace(/url\((['"]?)([^'")]+)\1\)/g, (m, q, u) => (u.startsWith("#") ? m : `url(${q}${absolutize(u)}${q})`));
+  // visible stroke at all). `base` defaults to the document's own URL, but a
+  // stylesheet fetched from elsewhere (see captureRealStylesheets below)
+  // must resolve its relative url()s against ITS OWN url instead.
+  function absolutizeCssUrls(css, base = location.href) {
+    return css.replace(/url\((['"]?)([^'")]+)\1\)/g, (m, q, u) => (u.startsWith("#") ? m : `url(${q}${absolutize(u, base)}${q})`));
   }
 
   // ---------- real stylesheet capture ----------
@@ -48,22 +65,46 @@
   // Document order is preserved (cascade is order-dependent for equal-
   // specificity rules) since document.styleSheets already exposes sheets in
   // that order.
-  function captureRealStylesheets() {
+  async function captureRealStylesheets() {
     const blocks = [];
-    let skippedSheets = 0;
+    const crossOriginHrefs = [];
     for (const sheet of document.styleSheets) {
       let cssRules;
       try {
         cssRules = sheet.cssRules;
       } catch {
-        // Cross-origin stylesheet with no permissive CORS header — the
-        // browser blocks JS from reading its rules at all, no workaround
-        // from content-script code. Same hard boundary as font embedding.
-        skippedSheets++;
+        // Cross-origin stylesheet with no permissive CORS header — Chrome's
+        // CSSOM blocks JS from reading document.styleSheets[i].cssRules for
+        // these regardless of extension permissions (this is a per-document
+        // rendering-engine restriction, not a fetch-level CORS check).
+        // Observed live on Intercom's Knowledge Hub: its entire Tailwind-
+        // style utility-class design system (flex, gap-4, h-9, ...) ships in
+        // exactly this kind of sheet, so skipping it silently meant the
+        // "captured" page rendered as unstyled plain text/links, structure
+        // intact but zero visual styling. Falling back to a raw fetch()
+        // relayed through background.js (below) DOES work here — that fetch
+        // runs under the extension's own host_permissions, which is a
+        // separate, less restrictive privilege boundary than the page's
+        // CSSOM access check.
+        if (sheet.href) crossOriginHrefs.push(sheet.href);
         continue;
       }
       const text = Array.from(cssRules).map((r) => r.cssText).join("\n");
       if (text) blocks.push(text);
+    }
+    let skippedSheets = 0;
+    for (const href of crossOriginHrefs) {
+      try {
+        const resp = await send({ type: "PM_FETCH_TEXT", url: href });
+        if (!resp || !resp.ok) throw new Error((resp && resp.error) || "fetch failed");
+        // Resolved against the STYLESHEET's own url, not the document's —
+        // this text never went through the browser's own relative-url
+        // resolution the way an in-DOM stylesheet's cssRules would have.
+        blocks.push(absolutizeCssUrls(resp.text, href));
+      } catch (err) {
+        console.warn("[Page Bender] could not fetch cross-origin stylesheet", href, err);
+        skippedSheets++;
+      }
     }
     return { css: blocks.join("\n"), skippedSheets };
   }
@@ -126,7 +167,61 @@
     return ownFontDataUri;
   }
 
-  function bakeNode(node) {
+  // ---------- cross-frame iframe baking ----------
+  // An <iframe>'s rendered content lives in a separate document bakeNode's
+  // DOM walk can never reach, cross-origin or not — same-origin policy
+  // blocks contentDocument access, and even a same-origin iframe is still a
+  // different document tree entirely. The actual fix: content.js is
+  // injected into every frame of the tab, not just the top one (see
+  // background.js), and frames talk to each other via postMessage, which —
+  // unlike direct DOM/CSSOM access — was designed from day one to work
+  // across origins. Each frame bakes ITSELF the exact same way the top
+  // frame bakes the whole page, then hands the resulting HTML back up to
+  // whichever frame asked, recursively (an iframe-within-an-iframe replies
+  // to its own parent the same way). Observed live on AppsFlyer's login
+  // screen: the marketing panel beside the form is a same-tab,
+  // different-origin <iframe> pointing at a real page — it already renders
+  // fine live (network- and origin-dependent), it just wasn't part of the
+  // frozen/offline snapshot before this.
+  let bakeRequestSeq = 0;
+  const pendingBakeRequests = new Map(); // requestId -> resolve(html|null)
+
+  window.addEventListener("message", (e) => {
+    const data = e.data;
+    if (!data || typeof data !== "object") return;
+    if (data.type === "PBX_BAKE_REQUEST") {
+      // A parent frame wants OUR document baked — always root at OUR
+      // document.body, this has nothing to do with the top frame's own
+      // section-select state.
+      captureBakedHtml(document.body)
+        .then(({ html }) => e.source.postMessage({ type: "PBX_BAKE_RESPONSE", requestId: data.requestId, html }, "*"))
+        .catch((err) => e.source.postMessage({ type: "PBX_BAKE_RESPONSE", requestId: data.requestId, error: String((err && err.message) || err) }, "*"));
+      return;
+    }
+    if (data.type === "PBX_BAKE_RESPONSE") {
+      const resolve = pendingBakeRequests.get(data.requestId);
+      if (!resolve) return;
+      pendingBakeRequests.delete(data.requestId);
+      resolve(data.error ? null : data.html);
+    }
+  });
+
+  // Resolves to the iframe's own baked HTML, or null on timeout/failure —
+  // bakeNode leaves the iframe's live `src` in place either way, so a
+  // failed/slow bake just falls back to the same live-iframe behavior this
+  // had before any of this existed.
+  function requestFrameBake(iframeEl, timeoutMs = 6000) {
+    return new Promise((resolve) => {
+      const win = iframeEl.contentWindow;
+      if (!win) { resolve(null); return; }
+      const requestId = `pbx-${Date.now()}-${bakeRequestSeq++}`;
+      const timer = setTimeout(() => { pendingBakeRequests.delete(requestId); resolve(null); }, timeoutMs);
+      pendingBakeRequests.set(requestId, (html) => { clearTimeout(timer); resolve(html); });
+      win.postMessage({ type: "PBX_BAKE_REQUEST", requestId }, "*");
+    });
+  }
+
+  function bakeNode(node, iframeBakes) {
     if (node.nodeType === Node.TEXT_NODE) return node.cloneNode(true);
     if (node.nodeType !== Node.ELEMENT_NODE) return null;
 
@@ -159,6 +254,13 @@
     for (const attr of ["src", "href", "poster"]) {
       if (clone.hasAttribute && clone.hasAttribute(attr)) clone.setAttribute(attr, absolutize(clone.getAttribute(attr)));
     }
+    // `src` above is left in place as a live fallback — `srcdoc` still wins
+    // when both are present, so a frame we got a real bake back for renders
+    // frozen/offline, and one we didn't (timeout, no contentWindow, cap hit)
+    // just keeps behaving exactly like it always did.
+    if (tag === "iframe" && iframeBakes && iframeBakes.has(node)) {
+      clone.setAttribute("srcdoc", iframeBakes.get(node));
+    }
 
     if (tag === "input" || tag === "textarea") {
       if (node.checked !== undefined && (node.type === "checkbox" || node.type === "radio")) {
@@ -175,7 +277,7 @@
     if (tag === "option") clone.toggleAttribute("selected", node.selected);
 
     for (const child of node.childNodes) {
-      const baked = bakeNode(child);
+      const baked = bakeNode(child, iframeBakes);
       if (baked) clone.appendChild(baked);
     }
     return clone;
@@ -195,7 +297,13 @@
   // logic treats as "the real page" (that's still exactly the one <div>
   // holding the untouched baked clone, unchanged from before).
   async function captureBakedHtml(root = document.body) {
-    const baked = bakeNode(root);
+    const iframeEls = root.tagName && root.tagName.toLowerCase() === "iframe"
+      ? [root]
+      : Array.from(root.querySelectorAll ? root.querySelectorAll("iframe") : []);
+    const iframeBakePairs = await Promise.all(iframeEls.map(async (el) => [el, await requestFrameBake(el)]));
+    const iframeBakes = new Map(iframeBakePairs.filter(([, html]) => html));
+
+    const baked = bakeNode(root, iframeBakes);
     let bodyEl = baked;
     let stageCss = "";
     if (root !== document.body) {
@@ -262,20 +370,57 @@
     container.appendChild(bodyEl);
     const bodyHtml = container.innerHTML;
 
-    const { css: rawCss, skippedSheets } = captureRealStylesheets();
+    const { css: rawCss, skippedSheets } = await captureRealStylesheets();
     const absolutizedCss = absolutizeCssUrls(rawCss);
     const { css: finalCss, diagnostics: fontDiag } = await embedFontFaces(absolutizedCss);
     const styleBlock = finalCss ? `<style>${finalCss}</style>\n` : "";
     const stageStyleBlock = stageCss ? `<style>${stageCss}</style>\n` : "";
     const fontDiagnostics = { ...fontDiag, sheetsSkippedCrossOrigin: skippedSheets };
-    const html = `<!doctype html>\n<html>\n<head>\n<meta charset="utf-8">\n<title>${escapeHtml(document.title)}</title>\n${styleBlock}${stageStyleBlock}</head>\n${bodyHtml}\n</html>\n`;
+    // documentElement's own attributes (class, lang, dir, data-*, ...) — NOT
+    // covered by bakeNode, which only ever walks document.body downward.
+    // Observed live on Intercom: theme (light/dark) is a `class="dark"` on
+    // <html>, with the captured CSS defining its whole color system as
+    // custom properties scoped under that class vs :root's light defaults.
+    // A bare <html> tag here means .dark matches nothing, so every color
+    // variable silently falls back to its light value — the CSS and markup
+    // both come through intact, only the one attribute that selects between
+    // them was ever missing.
+    const htmlAttrs = Array.from(document.documentElement.attributes)
+      .map((a) => ` ${a.name}="${escapeHtml(a.value)}"`)
+      .join("");
+    const html = `<!doctype html>\n<html${htmlAttrs}>\n<head>\n<meta charset="utf-8">\n<title>${escapeHtml(document.title)}</title>\n${styleBlock}${stageStyleBlock}</head>\n${bodyHtml}\n</html>\n`;
     return { html, fontDiagnostics };
   }
 
-  function send(msg) {
-    return new Promise((resolve) => chrome.runtime.sendMessage(msg, (resp) => resolve(resp)));
+  // A hung background.js handler (e.g. a cross-origin fetch that never
+  // settles — see PM_FETCH_TEXT) used to hang this forever with no timeout
+  // at all, which silently hung the whole capture flow with it (nothing
+  // downstream ever got a chance to time out on its own). This is also why
+  // an EXTENSION RELOAD while the tab was already open used to fail
+  // silently: re-clicking the pill re-runs content.js, but
+  // window.__pageMockInjected is already true from the pre-reload instance,
+  // so the click just re-triggers that STALE instance — whose
+  // chrome.runtime.sendMessage calls now throw "Extension context
+  // invalidated" — and with no timeout AND no catch anywhere upstream (see
+  // runCapture), that error had nowhere to go. A full page refresh after
+  // reloading the extension is still required either way; this just makes
+  // it fail loud instead of hanging silently.
+  function send(msg, timeoutMs = 15000) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${msg.type} timed out after ${timeoutMs}ms`)), timeoutMs);
+      try {
+        chrome.runtime.sendMessage(msg, (resp) => {
+          clearTimeout(timer);
+          resolve(resp);
+        });
+      } catch (err) {
+        clearTimeout(timer);
+        reject(err);
+      }
+    });
   }
 
+  if (isTopFrame) {
   // Ported from mock-toolbar.js's identical helper — crops a full-viewport
   // screenshot down to one element's bounding box, DPR-aware, so a section
   // capture's fidelity pass compares against just that section rather than
@@ -324,8 +469,6 @@
   }
   ensurePanelFont();
 
-  const svgIcon = (inner, size = 15) =>
-    `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
   // Same "bend" logo mark (two legs merging into a single upward arrow,
   // from the extension icon) mock-toolbar.js uses on its pill/bubble —
   // used here too so the pre-capture pill matches post-capture branding.
@@ -430,69 +573,98 @@
     captureBtn.classList.add("pm-busy");
     labelEl.textContent = "Capturing…";
     setStatus("capturing…", true);
-    const { html, fontDiagnostics } = await captureBakedHtml(root);
+    // Everything below used to run with nothing catching a rejection —
+    // any throw (a hung/failed cross-frame iframe bake, a background.js
+    // message that never got a response, an "Extension context invalidated"
+    // error from re-clicking after reloading the extension without
+    // refreshing the tab, ...) left the button stuck on "Capturing…"
+    // forever with zero visible error. Wrapping the whole thing means any
+    // failure mode at least surfaces as a real error in the status pill.
+    try {
+      const { html, fontDiagnostics } = await captureBakedHtml(root);
 
-    // A real screenshot of the current viewport, sent alongside the baked
-    // HTML — the server runs a one-time AI vision pass comparing the two
-    // and fixing whatever the mechanical bake still gets wrong (pseudo-
-    // element edge cases, fonts that couldn't be fetched, anything else).
-    const shot = await send({ type: "PM_CAPTURE_SCREENSHOT" });
-    let screenshot = shot && shot.ok ? shot.dataUrl : null;
-    if (screenshot && root !== document.body) {
-      screenshot = await cropToSelection(screenshot, root.getBoundingClientRect());
-    }
+      // A real screenshot of the current viewport, sent alongside the baked
+      // HTML — the server runs a one-time AI vision pass comparing the two
+      // and fixing whatever the mechanical bake still gets wrong (pseudo-
+      // element edge cases, fonts that couldn't be fetched, anything else).
+      const shot = await send({ type: "PM_CAPTURE_SCREENSHOT" });
+      let screenshot = shot && shot.ok ? shot.dataUrl : null;
+      if (screenshot && root !== document.body) {
+        screenshot = await cropToSelection(screenshot, root.getBoundingClientRect());
+      }
 
-    const resp = await send({ type: "PM_CAPTURE", html, title: document.title, url: location.href, screenshot, fontDiagnostics });
-    captureBtn.disabled = false;
-    sectionBtn.disabled = false;
-    captureBtn.classList.remove("pm-busy");
-    if (!resp || !resp.ok) {
+      const resp = await send({ type: "PM_CAPTURE", html, title: document.title, url: location.href, screenshot, fontDiagnostics });
+      if (!resp || !resp.ok) {
+        labelEl.textContent = "Let's Page Bend";
+        setStatus(`capture failed: ${resp && resp.error}`, true);
+        return;
+      }
+      await send({ type: "PM_OPEN_PREVIEW", slug: resp.slug, url: resp.previewUrl });
       labelEl.textContent = "Let's Page Bend";
-      setStatus(`capture failed: ${resp && resp.error}`, true);
-      return;
+      setStatus(screenshot ? "captured — mock open in a new tab, enhancing fidelity there" : "captured — mock open in a new tab", true);
+    } catch (err) {
+      labelEl.textContent = "Let's Page Bend";
+      setStatus(`capture failed: ${(err && err.message) || err}`, true);
+    } finally {
+      captureBtn.disabled = false;
+      sectionBtn.disabled = false;
+      captureBtn.classList.remove("pm-busy");
     }
-    await send({ type: "PM_OPEN_PREVIEW", slug: resp.slug, url: resp.previewUrl });
-    labelEl.textContent = "Let's Page Bend";
-    setStatus(screenshot ? "captured — mock open in a new tab, enhancing fidelity there" : "captured — mock open in a new tab", true);
     setTimeout(() => setStatus("", false), 4000);
   }
 
   captureBtn.addEventListener("click", () => runCapture(document.body));
 
-  // ---------- section-select mode (hover-highlight, click to capture just
-  // that element instead of the whole page) — same interaction pattern as
-  // mock-toolbar.js's own select-mode, applied here at capture time instead
-  // of edit time. ----------
+  // ---------- section-select mode (hover-highlight, click to arm an
+  // element, click it again to confirm — capture only fires on that second,
+  // deliberate click. Observed live on Intercom's Knowledge Hub: select mode
+  // was left on and the very next click anywhere on the page (landing on the
+  // table's header row) fired an immediate capture of that tiny element
+  // instead of the intended full page, with no way to tell beforehand what
+  // was about to be captured. Requiring a second click on the SAME target
+  // turns that stray first click into a harmless "aim" instead. ----------
   let sectionSelectMode = false;
+  let armedEl = null; // clicked once, awaiting a confirming second click on itself
 
   function setSectionSelectMode(on) {
     sectionSelectMode = on;
+    armedEl = null;
     sectionBtn.classList.toggle("pm-on", on);
     hoverBox.style.display = "none";
     hoverBadge.style.display = "none";
     document.documentElement.style.cursor = on ? "crosshair" : "";
   }
 
-  function onSectionMouseMove(e) {
-    if (!sectionSelectMode) return;
-    // Shadow DOM event retargeting means a listener OUTSIDE the shadow tree
-    // (this one, on `document`) sees e.target as `host` itself for anything
-    // happening inside our own panel — so this one check covers the whole
-    // panel, not just individual elements within it.
-    if (host.contains(e.target)) { hoverBox.style.display = "none"; hoverBadge.style.display = "none"; return; }
-    const r = e.target.getBoundingClientRect();
+  // Shared by both the free-following hover box and the frozen "armed"
+  // outline — same visual, just driven by a different element/label.
+  function paintHoverAt(el, label) {
+    const r = el.getBoundingClientRect();
     hoverBox.style.display = "block";
     hoverBox.style.left = `${r.left}px`;
     hoverBox.style.top = `${r.top}px`;
     hoverBox.style.width = `${r.width}px`;
     hoverBox.style.height = `${r.height}px`;
-    // Small element-type tab (e.g. "td") on the frame — matches the
-    // original Page Bender project's select tool.
-    const cls = e.target.classList[0] ? `.${e.target.classList[0]}` : "";
-    hoverBadge.textContent = e.target.tagName.toLowerCase() + cls;
+    hoverBadge.textContent = label;
     hoverBadge.style.display = "block";
     hoverBadge.style.left = `${r.left}px`;
     hoverBadge.style.top = `${Math.max(0, r.top - 24)}px`;
+  }
+
+  // Small element-type tab (e.g. "td") on the frame — matches the original
+  // Page Bender project's select tool.
+  function describeSectionTarget(el) {
+    const cls = el.classList[0] ? `.${el.classList[0]}` : "";
+    return el.tagName.toLowerCase() + cls;
+  }
+
+  function onSectionMouseMove(e) {
+    if (!sectionSelectMode || armedEl) return; // frozen on the armed target until confirmed or cancelled
+    // Shadow DOM event retargeting means a listener OUTSIDE the shadow tree
+    // (this one, on `document`) sees e.target as `host` itself for anything
+    // happening inside our own panel — so this one check covers the whole
+    // panel, not just individual elements within it.
+    if (host.contains(e.target)) { hoverBox.style.display = "none"; hoverBadge.style.display = "none"; return; }
+    paintHoverAt(e.target, describeSectionTarget(e.target));
   }
 
   function onSectionClick(e) {
@@ -501,15 +673,29 @@
     e.preventDefault();
     e.stopPropagation();
     const el = e.target;
-    setSectionSelectMode(false);
-    runCapture(el);
+    if (armedEl === el) {
+      // second click on the same element — confirmed, capture for real
+      setSectionSelectMode(false);
+      runCapture(el);
+      return;
+    }
+    // first click, or a click on a different element while one was already
+    // armed — (re-)aim only, nothing captured yet
+    armedEl = el;
+    paintHoverAt(el, `${describeSectionTarget(el)} — click again to capture, Esc to cancel`);
+  }
+
+  function onSectionKeydown(e) {
+    if (sectionSelectMode && e.key === "Escape") setSectionSelectMode(false);
   }
 
   document.addEventListener("mousemove", onSectionMouseMove, true);
   document.addEventListener("click", onSectionClick, true);
+  document.addEventListener("keydown", onSectionKeydown, true);
   sectionBtn.addEventListener("click", () => setSectionSelectMode(!sectionSelectMode));
 
   window.__pageMockToggle = () => {
     host.style.display = host.style.display === "none" ? "block" : "none";
   };
+  }
 })();

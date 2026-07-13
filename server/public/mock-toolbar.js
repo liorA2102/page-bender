@@ -537,8 +537,8 @@
         <span class="pm-qe-radius-value"><input type="number" class="pm-qe-radius-input" min="0" max="999" value="${radius}" />px</span>
       </div>
     `;
+    quickEdit.classList.add("pm-open"); // must be visible (display != none) before positionQuickEdit measures its own height
     positionQuickEdit(rect);
-    quickEdit.classList.add("pm-open");
 
     function setActiveSwatch(target, btn) {
       quickEdit.querySelectorAll(`.pm-qe-swatch[data-target="${target}"]`).forEach((b) => b.classList.remove("pm-qe-active"));
@@ -595,9 +595,28 @@
 
   function positionQuickEdit(rect) {
     quickEdit.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 292))}px`;
-    const above = rect.top > 260;
-    quickEdit.style.top = above ? `${rect.top - 8}px` : `${rect.bottom + 8}px`;
-    quickEdit.style.transform = above ? "translateY(-100%)" : "none";
+    quickEdit.style.transform = "none"; // top is computed in absolute terms below, no anchor trick needed
+
+    // Measured AFTER the panel is already display:flex (its
+    // getBoundingClientRect is all-zero while pm-open hasn't been added).
+    const panelHeight = quickEdit.getBoundingClientRect().height;
+    // The toolbar (pill/card/bubble) is fixed at the bottom of the viewport
+    // and shares this panel's z-index, so whichever is later in the DOM
+    // wins paint order on overlap — never let this panel's bottom edge
+    // cross into its footprint, regardless of where the selection sits.
+    const safeBottom = toolbar.getBoundingClientRect().top - 12;
+
+    const below = rect.bottom + 8;
+    const above = rect.top - 8 - panelHeight;
+    let top;
+    if (below >= 8 && below + panelHeight <= safeBottom) {
+      top = below; // fits below the selection, clear of the toolbar
+    } else if (above >= 8 && above + panelHeight <= safeBottom) {
+      top = above; // fits above the selection, clear of the toolbar
+    } else {
+      top = Math.max(8, safeBottom - panelHeight); // neither side clears the toolbar — pin just above it
+    }
+    quickEdit.style.top = `${top}px`;
   }
 
   function hideQuickEdit() {
@@ -773,12 +792,26 @@
       .pm-bubble.pm-show { display: flex; }
       .pm-bubble::after { content: ""; position: absolute; inset: -6px; border-radius: 50%;
         border: 1.5px solid rgba(255,110,199,.5); animation: pm-breathe 2.6s ease-in-out infinite; }
+
+      .pm-pill-dot { width: 8px; height: 8px; border-radius: 50%; flex: none;
+        background: var(--pm-pink); box-shadow: 0 0 0 2px rgba(20,14,22,.9);
+        animation: pm-breathe 2s ease-in-out infinite; }
+      .pm-update-banner { display: none; align-items: center; justify-content: space-between; gap: 10px;
+        background: rgba(255,61,146,.1); border: 1px solid rgba(255,61,146,.3); border-radius: 10px;
+        padding: 8px 8px 8px 12px; margin-bottom: 12px; font-size: 12px; color: var(--pm-text-dim); }
+      .pm-update-banner.pm-show { display: flex; }
+      .pm-update-banner .pm-update-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pm-update-btn { all: unset; flex: none; cursor: pointer; font: 600 11px 'Plus Jakarta Sans', sans-serif;
+        color: #1c0f18; background: linear-gradient(135deg, var(--pm-pink), var(--pm-pink-3));
+        padding: 6px 11px; border-radius: 999px; }
+      .pm-update-btn:disabled { opacity: .55; cursor: default; }
     </style>
     <div id="pm-scrim"></div>
     <div class="pm-pill" id="pm-pill-open">
       <div class="pm-halo"></div>
       <span class="pm-sparkle">${ICONS.bend}</span>
       <span class="pm-label">Page Bender</span>
+      <span id="pm-pill-dot" class="pm-pill-dot" style="display:none;"></span>
     </div>
     <div class="pm-card">
       <div class="pm-halo2"></div>
@@ -790,6 +823,10 @@
           <span class="pm-info-icon">${ICONS.info}</span>
           <span class="pm-tooltip">Click text on the page to edit directly. Select an element for color/radius or prompt context.</span>
         </span>
+      </div>
+      <div id="pm-update-banner" class="pm-update-banner">
+        <span class="pm-update-text" id="pm-update-text">Update available</span>
+        <button class="pm-update-btn" id="pm-update-btn">Update</button>
       </div>
       <div id="pm-chip" class="pm-chip" style="display:none;">
         <img id="pm-chip-thumb" />
@@ -846,8 +883,64 @@
   const instrEl = toolbar.querySelector("#pm-instruction");
   const sendBtn = toolbar.querySelector("#pm-send");
   const statusEl = toolbar.querySelector("#pm-status");
+  const pillDotEl = toolbar.querySelector("#pm-pill-dot");
+  const updateBannerEl = toolbar.querySelector("#pm-update-banner");
+  const updateTextEl = toolbar.querySelector("#pm-update-text");
+  const updateBtn = toolbar.querySelector("#pm-update-btn");
 
   function setStatus(text) { statusEl.textContent = text; }
+
+  // Polls the server's /version-check (it's the one piece that's always
+  // running, via launchd, and has git access to actually know) rather than
+  // comparing anything client-side. A miss (server briefly down, GitHub
+  // unreachable) just leaves the last-known state alone — see
+  // refreshVersionCache's comment in server.js for the same call on that end.
+  async function checkForUpdate() {
+    try {
+      const data = await fetch("/version-check").then((r) => r.json());
+      if (!data.updateAvailable) return;
+      pillDotEl.style.display = "block";
+      updateBannerEl.classList.add("pm-show");
+      updateTextEl.textContent = data.latestMessage ? `Update available — ${data.latestMessage}` : "Update available";
+    } catch {
+      // server unreachable this round — next poll retries
+    }
+  }
+
+  // Waits for the server to come back up after /update triggers its
+  // git-pull-then-exit (launchd's KeepAlive relaunches it — see server.js);
+  // there's no separate "restart" signal to wait on beyond the port
+  // answering again.
+  async function waitForServerRestart() {
+    await new Promise((r) => setTimeout(r, 800));
+    for (let i = 0; i < 30; i++) {
+      try {
+        const res = await fetch("/version-check");
+        if (res.ok) return;
+      } catch {
+        // still down/restarting — keep polling
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+
+  updateBtn.addEventListener("click", async () => {
+    updateBtn.disabled = true;
+    updateBtn.textContent = "Updating…";
+    updateTextEl.textContent = "Pulling latest…";
+    try {
+      const resp = await fetch("/update", { method: "POST" }).then((r) => r.json());
+      if (!resp.ok) throw new Error(resp.error || "update failed");
+    } catch (err) {
+      updateTextEl.textContent = `Update failed: ${err.message}`;
+      updateBtn.disabled = false;
+      updateBtn.textContent = "Retry";
+      return;
+    }
+    updateTextEl.textContent = "Restarting…";
+    await waitForServerRestart();
+    location.reload();
+  });
 
   // Shared by a manual send (sendPrompt) and the background capture-time
   // fidelity pass (startAgentPoll) — one visual "busy" state, one Stop
@@ -1105,6 +1198,8 @@
   loadHistory();
   updateUndoRedoButtons();
   updateSelectionChip();
+  checkForUpdate();
+  setInterval(checkForUpdate, 15 * 60 * 1000);
   if (window.__PM_AGENT_PENDING) {
     startAgentPoll();
   } else {

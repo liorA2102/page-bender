@@ -49,6 +49,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true, dataUrl });
         return;
       }
+      if (msg.type === "PM_FETCH_TEXT") {
+        // Relay for a cross-origin stylesheet content.js's own fetch() can't
+        // read the body of (page-context fetch is bound by the SAME CORS
+        // policy that already blocks document.styleSheets[i].cssRules for
+        // it). A fetch from THIS context — the extension's background
+        // service worker — is a different, less restrictive privilege
+        // boundary: Chrome grants it cross-origin response bodies for any
+        // host covered by host_permissions ("<all_urls>" here), no CORS
+        // header from the server required. Bounded with its own timeout —
+        // this used to be a bare fetch with nothing capping it, so a CDN
+        // that silently drops the connection instead of erroring (rather
+        // than a clean failure) hung the ENTIRE capture indefinitely, with
+        // no timeout anywhere upstream either to catch it.
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
+        let res;
+        try {
+          res = await fetch(msg.url, { signal: controller.signal });
+        } finally {
+          clearTimeout(timer);
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        sendResponse({ ok: true, text });
+        return;
+      }
       sendResponse({ ok: false, error: `unknown message type ${msg.type}` });
     } catch (err) {
       sendResponse({ ok: false, error: err.message });
@@ -77,7 +103,46 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
 });
 
 // Toolbar icon click activates (or toggles) the Capture button on the
-// current tab.
+// current tab. allFrames:true also injects into every same-tab <iframe> —
+// content.js checks window.top === window.self and only builds the visible
+// pill/section-select UI in the actual top frame; every other frame just
+// sits there silently able to bake itself on request (see content.js's
+// PBX_BAKE_REQUEST handling), which is what lets a captured page freeze an
+// iframe's content instead of leaving it as a live, network-dependent embed.
 chrome.action.onClicked.addListener((tab) => {
-  chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+  chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ["content.js"] });
+});
+
+// Passive update indicator: the server (always running via launchd) is the
+// one place that can actually check GitHub and git-pull, so this just polls
+// its /version-check endpoint and reflects the result as a badge dot. The
+// actual one-click update lives in mock-toolbar.js instead of here, since
+// that's a real UI surface with room for an "Update" button — a badge click
+// here is already spoken for (it activates capture on the current tab, see
+// above), so it stays a passive signal, not a second entry point.
+const VERSION_CHECK_ALARM = "pm-version-check";
+const VERSION_CHECK_PERIOD_MIN = 30;
+
+async function checkForUpdate() {
+  try {
+    const res = await fetch(`${SERVER}/version-check`);
+    const data = await res.json();
+    await chrome.action.setBadgeText({ text: data.updateAvailable ? "!" : "" });
+    if (data.updateAvailable) await chrome.action.setBadgeBackgroundColor({ color: "#ff3d92" });
+  } catch {
+    // Server not running / unreachable — leave the badge as it was; the next
+    // alarm retries rather than flipping it off on a transient blip.
+  }
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create(VERSION_CHECK_ALARM, { periodInMinutes: VERSION_CHECK_PERIOD_MIN });
+  checkForUpdate();
+});
+chrome.runtime.onStartup.addListener(() => {
+  chrome.alarms.create(VERSION_CHECK_ALARM, { periodInMinutes: VERSION_CHECK_PERIOD_MIN });
+  checkForUpdate();
+});
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === VERSION_CHECK_ALARM) checkForUpdate();
 });
