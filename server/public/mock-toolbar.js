@@ -186,6 +186,21 @@
     return `<${tag}${id}${classes}>${text ? ` — "${text}"` : ""}`;
   }
 
+  // The agent used to get only describeElement()'s short text summary and
+  // had to relocate the real node itself — on a large single-file capture
+  // (hundreds of KB) that meant Bash/grep round-trips just to find what the
+  // user already had selected. Sending the real markup lets it match the
+  // node directly. Capped well above any real button/card/row (a couple KB)
+  // but short of "the user fat-fingered a huge section" turning into a
+  // second copy of half the page riding along in the prompt.
+  const MAX_SELECTION_HTML = 6000;
+  function selectionHtml(el) {
+    const html = el.outerHTML || "";
+    return html.length > MAX_SELECTION_HTML
+      ? `${html.slice(0, MAX_SELECTION_HTML)}\n<!-- truncated: selection was ${html.length} chars, over the ${MAX_SELECTION_HTML} cap -->`
+      : html;
+  }
+
   function onMouseMove(e) {
     if (!selectMode) return;
     const el = e.target;
@@ -232,7 +247,7 @@
     if (selectMode) {
       e.preventDefault();
       e.stopPropagation();
-      selection = { el: e.target, descriptor: describeElement(e.target), rect: e.target.getBoundingClientRect() };
+      selection = { el: e.target, descriptor: describeElement(e.target), html: selectionHtml(e.target), rect: e.target.getBoundingClientRect() };
       pendingImage = null;
       setSelectMode(false);
       updateSelectionChip();
@@ -1100,7 +1115,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           slug, instruction,
-          selection: selection ? selection.descriptor : "",
+          selection: selection ? selection.html : "",
           images: pendingImage ? [pendingImage] : [],
           resumeSessionId: sessionId,
         }),
