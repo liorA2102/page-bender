@@ -67,33 +67,49 @@
   // that order.
   async function captureRealStylesheets() {
     const blocks = [];
-    const crossOriginHrefs = [];
+    const externalHrefs = [];
     for (const sheet of document.styleSheets) {
+      // Inline <style> tags: read the author's own raw text instead of
+      // reconstructing it from sheet.cssRules[i].cssText. Verified live:
+      // Chromium's CSSOM cssText serializer silently corrupts any rule that
+      // combines a `background: <value with var(...)>` shorthand with an
+      // explicit background-clip override (the standard gradient-text-fill
+      // trick) — every background-* longhand (image, position, size,
+      // repeat, attachment, origin, color) comes back as an EMPTY string,
+      // leaving only background-clip/color intact. That's a real Chromium
+      // cssText bug, not something specific to any one captured site — the
+      // author's own textContent never goes through that reconstruction, so
+      // it can't hit it. Relative url()s in that raw text still need
+      // resolving by hand (cssRules.cssText did this resolution for free as
+      // a side effect of CSSOM serialization; raw textContent does not).
+      if (!sheet.href && sheet.ownerNode && sheet.ownerNode.textContent) {
+        blocks.push(absolutizeCssUrls(sheet.ownerNode.textContent));
+        continue;
+      }
+      // External stylesheets: same cssText bug can hit these too, so always
+      // fetch the real file rather than trust CSSOM reconstruction — not
+      // just for the cross-origin case (below) where cssRules access throws
+      // outright. Deferred to a second pass so document order among THESE
+      // is preserved relative to each other; already not fully preserved
+      // relative to inline sheets, which is an accepted pre-existing gap.
+      if (sheet.href) {
+        externalHrefs.push(sheet.href);
+        continue;
+      }
+      // Last resort: a CSSOM-only sheet (e.g. a constructed/adopted
+      // stylesheet) with no backing <style> tag or file to read raw text
+      // from — cssRules.cssText is the only source available at all.
       let cssRules;
       try {
         cssRules = sheet.cssRules;
       } catch {
-        // Cross-origin stylesheet with no permissive CORS header — Chrome's
-        // CSSOM blocks JS from reading document.styleSheets[i].cssRules for
-        // these regardless of extension permissions (this is a per-document
-        // rendering-engine restriction, not a fetch-level CORS check).
-        // Observed live on Intercom's Knowledge Hub: its entire Tailwind-
-        // style utility-class design system (flex, gap-4, h-9, ...) ships in
-        // exactly this kind of sheet, so skipping it silently meant the
-        // "captured" page rendered as unstyled plain text/links, structure
-        // intact but zero visual styling. Falling back to a raw fetch()
-        // relayed through background.js (below) DOES work here — that fetch
-        // runs under the extension's own host_permissions, which is a
-        // separate, less restrictive privilege boundary than the page's
-        // CSSOM access check.
-        if (sheet.href) crossOriginHrefs.push(sheet.href);
         continue;
       }
       const text = Array.from(cssRules).map((r) => r.cssText).join("\n");
       if (text) blocks.push(text);
     }
     let skippedSheets = 0;
-    for (const href of crossOriginHrefs) {
+    for (const href of externalHrefs) {
       try {
         const resp = await send({ type: "PM_FETCH_TEXT", url: href });
         if (!resp || !resp.ok) throw new Error((resp && resp.error) || "fetch failed");
@@ -102,7 +118,10 @@
         // resolution the way an in-DOM stylesheet's cssRules would have.
         blocks.push(absolutizeCssUrls(resp.text, href));
       } catch (err) {
-        console.warn("[Page Bender] could not fetch cross-origin stylesheet", href, err);
+        // A same-origin fetch failing here (unlike the cross-origin case
+        // this path used to be limited to) means the file itself is
+        // unreachable (deleted, network hiccup) — not a permissions issue.
+        console.warn("[Page Bender] could not fetch stylesheet", href, err);
         skippedSheets++;
       }
     }
@@ -404,7 +423,15 @@
           background: radial-gradient(circle at 28% 30%, rgba(255,110,199,.55), transparent 55%),
                       radial-gradient(circle at 76% 74%, rgba(255,45,120,.5), transparent 55%);
           filter: blur(40px); opacity: .75; }
-        .pbx-section-frame { position: relative; border-radius: 20px; overflow: hidden; background: ${effectiveBg};
+        /* No overflow: hidden here — the captured content is live interactive
+           DOM, not a flat screenshot. A tooltip, dropdown, or modal that's a
+           real descendant of the captured element (e.g. a chart tooltip
+           anchored via position:absolute to its wrapper) needs to be able to
+           render past this frame's edge exactly like it does on the live
+           page. Clipping to the rounded corner traded that away for a purely
+           cosmetic flourish; visible corners on an already-square content
+           block are a smaller loss than silently eating part of the UI. */
+        .pbx-section-frame { position: relative; border-radius: 20px; background: ${effectiveBg};
           box-shadow: 0 30px 90px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06); }
       `;
     }
