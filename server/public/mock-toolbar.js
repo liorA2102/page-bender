@@ -32,7 +32,8 @@
   let history = [];
   let pointer = -1;
   let selectMode = false;
-  let selection = null; // { el, descriptor, rect }
+  let selectedEls = []; // ordered list of selected elements — multi-select via shift/cmd-click
+  let anchorEl = null; // last plain- or cmd/ctrl-clicked element; shift-click ranges from here
   let pendingImage = null; // cropped screenshot data URL, cleared after send
   let editingEl = null;
   let editingOriginalText = "";
@@ -201,6 +202,62 @@
       : html;
   }
 
+  function selectionDescriptor() {
+    if (!selectedEls.length) return "";
+    if (selectedEls.length === 1) return describeElement(selectedEls[0]);
+    return `${selectedEls.length} elements selected`;
+  }
+
+  // Bounding box of the whole selection, used to park the action cluster —
+  // not just the last-clicked element, so it doesn't jump around oddly
+  // relative to a multi-element pick scattered across a table.
+  function selectionUnionRect() {
+    const rects = selectedEls.map((el) => el.getBoundingClientRect());
+    return {
+      left: Math.min(...rects.map((r) => r.left)),
+      top: Math.min(...rects.map((r) => r.top)),
+      right: Math.max(...rects.map((r) => r.right)),
+      bottom: Math.max(...rects.map((r) => r.bottom)),
+    };
+  }
+
+  // Excel-style Shift-click range: from the anchor (last plain/cmd-click) to
+  // whatever's clicked now. Table cells get a real 2D block — every cell in
+  // the row/column rectangle between the two corners, matching how Excel
+  // extends a range across a grid (this is what makes "select a whole
+  // column across several rows" a two-click gesture instead of one click
+  // per cell). Anything else falls back to the contiguous run of siblings
+  // between the two, or just the two endpoints if they don't share a parent.
+  function computeRange(a, b) {
+    const cellA = a.closest("td, th");
+    const cellB = b.closest("td, th");
+    if (cellA && cellB) {
+      const tableA = cellA.closest("table");
+      if (tableA && tableA === cellB.closest("table")) {
+        const rows = [...tableA.rows];
+        const rowOf = (cell) => rows.indexOf(cell.closest("tr"));
+        const colOf = (cell) => [...cell.closest("tr").cells].indexOf(cell);
+        const r1 = rowOf(cellA), r2 = rowOf(cellB);
+        const c1 = colOf(cellA), c2 = colOf(cellB);
+        const [rMin, rMax] = [Math.min(r1, r2), Math.max(r1, r2)];
+        const [cMin, cMax] = [Math.min(c1, c2), Math.max(c1, c2)];
+        const out = [];
+        for (let ri = rMin; ri <= rMax; ri++) {
+          const cells = [...rows[ri].cells];
+          for (let ci = cMin; ci <= cMax && ci < cells.length; ci++) out.push(cells[ci]);
+        }
+        return out;
+      }
+    }
+    if (a.parentElement && a.parentElement === b.parentElement) {
+      const siblings = [...a.parentElement.children];
+      const i1 = siblings.indexOf(a), i2 = siblings.indexOf(b);
+      const [lo, hi] = [Math.min(i1, i2), Math.max(i1, i2)];
+      return siblings.slice(lo, hi + 1);
+    }
+    return a === b ? [a] : [a, b];
+  }
+
   function onMouseMove(e) {
     if (!selectMode) return;
     const el = e.target;
@@ -231,10 +288,10 @@
   }
 
   function updateSelectionChip() {
-    if (selection || pendingImage) {
+    if (selectedEls.length || pendingImage) {
       chipEl.style.display = "flex";
       chipEl.classList.toggle("pm-image", !!pendingImage);
-      chipTextEl.textContent = selection ? selection.descriptor : "Screenshot attached";
+      chipTextEl.textContent = pendingImage ? "Screenshot attached" : selectionDescriptor();
       chipThumbEl.style.display = pendingImage ? "block" : "none";
       if (pendingImage) chipThumbEl.src = pendingImage;
     } else {
@@ -247,11 +304,29 @@
     if (selectMode) {
       e.preventDefault();
       e.stopPropagation();
-      selection = { el: e.target, descriptor: describeElement(e.target), html: selectionHtml(e.target), rect: e.target.getBoundingClientRect() };
+      const el = e.target;
+      hideQuickEdit();
+      // Excel-style selection: plain click sets the anchor and picks just
+      // that element; Shift-click extends the range from the anchor to
+      // here (table cells become a row/column block — see computeRange);
+      // Cmd/Ctrl-click toggles one element in or out without disturbing
+      // the rest, and becomes the new anchor for the next Shift-click.
+      // Select mode stays on across all of these — it only turns off via
+      // the Select button or Escape — so a Shift-click after the anchor
+      // click still lands here instead of hitting the real page.
+      if (e.shiftKey && anchorEl) {
+        selectedEls = computeRange(anchorEl, el);
+      } else if (e.metaKey || e.ctrlKey) {
+        const idx = selectedEls.indexOf(el);
+        if (idx === -1) selectedEls.push(el); else selectedEls.splice(idx, 1);
+        anchorEl = el;
+      } else {
+        selectedEls = [el];
+        anchorEl = el;
+      }
       pendingImage = null;
-      setSelectMode(false);
       updateSelectionChip();
-      showStyleTrigger(selection.el);
+      updateActionCluster();
       return;
     }
   });
@@ -449,26 +524,150 @@
     edit: svgIcon('<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>', 12),
     sliders: svgIcon('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>', 15),
     plus: svgIcon('<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>', 11),
+    trash: svgIcon('<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>', 13),
+    duplicate: svgIcon('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>', 13),
+    // "row" duplicate — an existing bar with a plus beneath it, reading as
+    // "add another one of these below" regardless of whether the thing
+    // clicked actually stacks vertically on its own (see findRowDuplicateTarget).
+    addRow: svgIcon('<rect x="3" y="4" width="18" height="6" rx="1"/><line x1="12" y1="15" x2="12" y2="21"/><line x1="9" y1="18" x2="15" y2="18"/>', 13),
     radius0: radiusIcon(0),
     radius4: radiusIcon(3),
     radius8: radiusIcon(6),
     radiusFull: radiusIcon(7.5),
   };
 
-  // ---------- quick edit: minimized trigger + full panel (color + radius) ----------
+  // ---------- selection overlay: outline boxes + action cluster (style /
+  // duplicate / delete) ----------
   //
-  // Opens collapsed by default (a small trigger bubble parked at the
-  // selected element's corner, matching the mini-bubble language in
-  // DESIGN-SYSTEM.md §5.5) rather than popping the full panel open
-  // immediately on every selection — the panel only appears once the user
-  // deliberately asks for it. "Minimize" on the panel returns to the
-  // trigger (context kept); "Close" dismisses both (see the two reset call
-  // sites — chip-clear and post-prompt — which call both hide fns).
+  // Selection is shown with floating overlay boxes (like hoverBox/dragBox
+  // above), never a class or attribute on the page's own elements — several
+  // call sites elsewhere in this file do pushHistory(document.body.innerHTML)
+  // to persist state, and anything stamped onto real content would leak
+  // into the saved mock permanently.
 
-  const styleTrigger = document.createElement("button");
+  const selectionBoxPool = [];
+  function getSelectionBox(i) {
+    if (selectionBoxPool[i]) return selectionBoxPool[i];
+    const box = document.createElement("div");
+    box.className = "pm-sel-box";
+    document.documentElement.appendChild(box);
+    selectionBoxPool[i] = box;
+    return box;
+  }
+  function renderSelectionBoxes() {
+    selectionBoxPool.forEach((box) => (box.style.display = "none"));
+    selectedEls.forEach((el, i) => {
+      const box = getSelectionBox(i);
+      const r = el.getBoundingClientRect();
+      box.style.display = "block";
+      box.style.left = `${r.left}px`;
+      box.style.top = `${r.top}px`;
+      box.style.width = `${r.width}px`;
+      box.style.height = `${r.height}px`;
+    });
+  }
+  // Selection boxes are computed from live getBoundingClientRect() at render
+  // time — a scroll or resize without a re-render would leave them stale.
+  window.addEventListener("scroll", () => { if (selectedEls.length) renderSelectionBoxes(); }, true);
+  window.addEventListener("resize", () => { if (selectedEls.length) renderSelectionBoxes(); });
+
+  function deleteSelection() {
+    if (!selectedEls.length) return;
+    selectedEls.forEach((el) => el.remove());
+    clearSelection();
+    pushHistory(document.body.innerHTML, { persist: true });
+  }
+
+  // Shared by both duplicate actions: clone each resolved target and drop it
+  // right after the original — for scattered picks (e.g. several <tr> across
+  // a table) that duplicates each in place rather than bunching all copies
+  // together. The new copies become the active selection, so a follow-up
+  // edit targets them.
+  function duplicateElements(resolveTarget) {
+    if (!selectedEls.length) return;
+    const targets = [];
+    selectedEls.forEach((el) => {
+      const target = resolveTarget ? resolveTarget(el) : el;
+      if (!targets.includes(target)) targets.push(target); // dedupe: e.g. two cells picked from the same row resolve to one row
+    });
+    selectedEls = targets.map((el) => {
+      const clone = el.cloneNode(true);
+      el.after(clone);
+      return clone;
+    });
+    anchorEl = selectedEls[0] || null; // the originals are gone as selection targets — anchor to a clone instead
+    updateSelectionChip();
+    updateActionCluster();
+    pushHistory(document.body.innerHTML, { persist: true });
+  }
+
+  function duplicateSelection() {
+    duplicateElements();
+  }
+
+  function isHorizontalContainer(el) {
+    const cs = getComputedStyle(el);
+    if (cs.display === "table-row") return true; // a <tr>'s <td>/<th> children always lay out side by side
+    if ((cs.display === "flex" || cs.display === "inline-flex") && !cs.flexDirection.startsWith("column")) return true;
+    if (cs.display === "grid" || cs.display === "inline-grid") {
+      const cols = cs.gridTemplateColumns.trim().split(/\s+/).filter(Boolean);
+      if (cols.length > 1) return true;
+    }
+    return false;
+  }
+
+  // Plain duplicateSelection() inserts the clone as the very next DOM
+  // sibling — whether that lands below or beside the original depends
+  // entirely on how the parent lays things out. For a <tr> (parent stacks
+  // rows vertically) that's already "down"; for a <td> (parent is the
+  // horizontal <tr>) or a card in a horizontal flex/grid row, it lands
+  // beside it instead. This climbs up from the clicked element past any
+  // ancestor whose OWN parent lays out children horizontally, stopping at
+  // the first level that stacks vertically — so "duplicate as a new row"
+  // reads the same way it already does for a selected <tr>, regardless of
+  // whether what got clicked was the row itself or one cell/card inside it.
+  function findRowDuplicateTarget(el) {
+    const tr = el.closest("tr");
+    if (tr) return tr;
+    let node = el;
+    while (node.parentElement && node.parentElement !== document.body) {
+      if (!isHorizontalContainer(node.parentElement)) return node;
+      node = node.parentElement;
+    }
+    return node;
+  }
+
+  function duplicateSelectionAsRow() {
+    duplicateElements(findRowDuplicateTarget);
+  }
+
+  // Opens collapsed by default (a small cluster parked at the selection's
+  // corner, matching the mini-bubble language in DESIGN-SYSTEM.md §5.5)
+  // rather than popping the full style panel open immediately on every
+  // selection. Style only applies to a single element (color/radius on a
+  // heterogeneous multi-selection doesn't make sense); Duplicate/Delete
+  // apply to the whole selection.
+
+  const clusterStyleBtn = document.createElement("button");
+  clusterStyleBtn.className = "pm-qe-style";
+  clusterStyleBtn.title = "Style this element";
+  clusterStyleBtn.innerHTML = ICONS.sliders;
+  const clusterDuplicateBtn = document.createElement("button");
+  clusterDuplicateBtn.className = "pm-qe-duplicate";
+  clusterDuplicateBtn.title = "Duplicate in place";
+  clusterDuplicateBtn.innerHTML = ICONS.duplicate;
+  const clusterDuplicateRowBtn = document.createElement("button");
+  clusterDuplicateRowBtn.className = "pm-qe-duplicate-row";
+  clusterDuplicateRowBtn.title = "Duplicate as a new row below";
+  clusterDuplicateRowBtn.innerHTML = ICONS.addRow;
+  const clusterDeleteBtn = document.createElement("button");
+  clusterDeleteBtn.className = "pm-qe-delete";
+  clusterDeleteBtn.title = "Delete selection";
+  clusterDeleteBtn.innerHTML = ICONS.trash;
+
+  const styleTrigger = document.createElement("div");
   styleTrigger.id = "pm-qe-trigger";
-  styleTrigger.title = "Style this element";
-  styleTrigger.innerHTML = `<span class="pm-qe-trigger-halo"></span>${ICONS.sliders}`;
+  styleTrigger.append(clusterStyleBtn, clusterDuplicateBtn, clusterDuplicateRowBtn, clusterDeleteBtn);
   document.documentElement.appendChild(styleTrigger);
 
   const quickEdit = document.createElement("div");
@@ -476,6 +675,31 @@
   document.documentElement.appendChild(quickEdit);
 
   let qeTargetEl = null;
+
+  clusterStyleBtn.addEventListener("click", () => {
+    if (!qeTargetEl) return;
+    styleTrigger.classList.remove("pm-show");
+    showQuickEdit(qeTargetEl);
+  });
+  clusterDuplicateBtn.addEventListener("click", duplicateSelection);
+  clusterDuplicateRowBtn.addEventListener("click", duplicateSelectionAsRow);
+  clusterDeleteBtn.addEventListener("click", deleteSelection);
+
+  // Delete/Backspace and Cmd/Ctrl+D act on the current selection — skipped
+  // while typing in the prompt box or mid text-edit, so they don't hijack
+  // normal editing keystrokes. Cmd/Ctrl+Shift+D is the row-aware duplicate
+  // (same one as the addRow cluster button).
+  document.addEventListener("keydown", (e) => {
+    if (!selectedEls.length || editingEl || document.activeElement === instrEl) return;
+    if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      deleteSelection();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d") {
+      e.preventDefault();
+      if (e.shiftKey) duplicateSelectionAsRow();
+      else duplicateSelection();
+    }
+  });
 
   function swatchRow(target, current) {
     const palette = extractPalette();
@@ -502,25 +726,35 @@
       </div>`;
   }
 
-  function showStyleTrigger(el) {
-    qeTargetEl = el;
+  function updateActionCluster() {
+    renderSelectionBoxes();
+    if (!selectedEls.length) { hideActionCluster(); return; }
+    qeTargetEl = selectedEls.length === 1 ? selectedEls[0] : null;
+    clusterStyleBtn.style.display = selectedEls.length === 1 ? "flex" : "none";
     quickEdit.classList.remove("pm-open");
-    const r = el.getBoundingClientRect();
-    styleTrigger.style.left = `${Math.min(r.right - 14, window.innerWidth - 36)}px`;
+    const r = selectionUnionRect();
+    const clusterWidth = selectedEls.length === 1 ? 126 : 96; // 3-4 buttons + gaps + padding
+    styleTrigger.style.left = `${Math.min(r.right - 14, window.innerWidth - clusterWidth)}px`;
     styleTrigger.style.top = `${Math.max(4, r.top - 14)}px`;
     styleTrigger.classList.add("pm-show");
   }
 
-  function hideStyleTrigger() {
+  function hideActionCluster() {
     styleTrigger.classList.remove("pm-show");
     qeTargetEl = null;
   }
 
-  styleTrigger.addEventListener("click", () => {
-    if (!qeTargetEl) return;
-    styleTrigger.classList.remove("pm-show");
-    showQuickEdit(qeTargetEl);
-  });
+  // Single reset path for every "deselect everything" call site (chip-clear,
+  // post-send) — folding renderSelectionBoxes() in here is what deleteSelection
+  // was missing, leaving stale outline boxes on screen for removed elements.
+  function clearSelection() {
+    selectedEls = [];
+    anchorEl = null;
+    updateSelectionChip();
+    renderSelectionBoxes();
+    hideQuickEdit();
+    hideActionCluster();
+  }
 
   function showQuickEdit(el) {
     qeTargetEl = el;
@@ -600,11 +834,11 @@
 
     quickEdit.querySelector(".pm-qe-min").addEventListener("click", () => {
       hideQuickEdit();
-      showStyleTrigger(el);
+      updateActionCluster();
     });
     quickEdit.querySelector(".pm-qe-close").addEventListener("click", () => {
       hideQuickEdit();
-      hideStyleTrigger();
+      hideActionCluster();
     });
   }
 
@@ -854,7 +1088,7 @@
         <p class="pm-greet">What should we change?</p>
         <span class="pm-info-wrap" tabindex="0">
           <span class="pm-info-icon">${ICONS.info}</span>
-          <span class="pm-tooltip">Click text on the page to edit directly. Select an element for color/radius or prompt context.</span>
+          <span class="pm-tooltip">Click text on the page to edit directly. Select an element for color/radius or prompt context — shift-click to select a range (like Excel), cmd/ctrl-click to add one at a time. Duplicate copies in place; the row icon (or Cmd/Ctrl+Shift+D) adds a new row below even if the layout would otherwise duplicate sideways.</span>
         </span>
       </div>
       <div id="pm-update-banner" class="pm-update-banner">
@@ -930,6 +1164,11 @@
   const updateBtn = toolbar.querySelector("#pm-update-btn");
 
   function setStatus(text) { statusEl.textContent = text; }
+
+  function formatTokenCompact(n) {
+    if (n == null) return null;
+    return n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
+  }
 
   // Polls the server's /version-check (it's the one piece that's always
   // running, via launchd, and has git access to actually know) rather than
@@ -1010,9 +1249,16 @@
   // shouldn't cancel a request that isn't running.
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    if (!cardEl.classList.contains("pm-thinking")) return;
-    e.preventDefault();
-    cancelAgent();
+    if (cardEl.classList.contains("pm-thinking")) {
+      e.preventDefault();
+      cancelAgent();
+    } else if (selectMode) {
+      // Select mode now stays on across clicks (Shift-click ranging needs
+      // the anchor click to not immediately drop out of the mode), so it
+      // needs its own explicit way to bail out beyond re-clicking Select.
+      e.preventDefault();
+      setSelectMode(false);
+    }
   });
 
   function growInput() {
@@ -1090,11 +1336,8 @@
   screenshotBtn.addEventListener("click", () => setScreenshotMode(!screenshotMode));
   toolbar.querySelector("#pm-chip-clear").addEventListener("click", (e) => {
     e.preventDefault();
-    selection = null;
     pendingImage = null;
-    updateSelectionChip();
-    hideQuickEdit();
-    hideStyleTrigger();
+    clearSelection();
   });
   undoBtn.addEventListener("click", () => { if (pointer > 0) applyHistoryIndex(--pointer); });
   redoBtn.addEventListener("click", () => { if (pointer < history.length - 1) applyHistoryIndex(++pointer); });
@@ -1115,7 +1358,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           slug, instruction,
-          selection: selection ? selection.html : "",
+          selection: selectedEls.length ? selectedEls.map(selectionHtml).join("\n") : "",
           images: pendingImage ? [pendingImage] : [],
           resumeSessionId: sessionId,
         }),
@@ -1138,15 +1381,16 @@
       document.body.innerHTML = doc.body.innerHTML;
       pushHistory(document.body.innerHTML, { persist: false }); // agent already wrote the file
       instrEl.value = "";
-      selection = null;
       pendingImage = null;
-      updateSelectionChip();
-      hideQuickEdit();
-      hideStyleTrigger();
+      clearSelection();
     }
     if (resp.cancelled) setStatus("stopped — edits made so far are kept");
     else if (resp.error) setStatus(resp.html ? `hit an error, kept partial edits: ${resp.error}` : `error: ${resp.error}`);
-    else setStatus("done ✓");
+    else {
+      const secs = resp.elapsedMs != null ? Math.round(resp.elapsedMs / 1000) : null;
+      const tokens = formatTokenCompact(resp.totalTokens);
+      setStatus(secs != null && tokens != null ? `Done. ${secs} Sec, ${tokens} Token` : "done ✓");
+    }
   }
   sendBtn.addEventListener("click", sendPrompt);
   instrEl.addEventListener("keydown", (e) => {
@@ -1294,23 +1538,27 @@
 
   const qeStyle = document.createElement("style");
   qeStyle.textContent = `
-    /* ---- minimized trigger bubble: parked at the selected element's
-       corner instead of the panel opening automatically (§ quick-edit,
-       matches the mini-bubble language in DESIGN-SYSTEM.md §5.5) ---- */
+    /* ---- selection action cluster: parked at the selection's corner
+       instead of any panel opening automatically (§ quick-edit, matches the
+       mini-bubble language in DESIGN-SYSTEM.md §5.5). Holds Style (only
+       shown for a single-element selection), Duplicate, and Delete. ---- */
     #pm-qe-trigger { all: initial; position: fixed; z-index: ${Z}; display: none;
-      width: 28px; height: 28px; border-radius: 50%; border: none; cursor: pointer;
-      align-items: center; justify-content: center;
-      background: linear-gradient(135deg, #ff6ec7, #ff2d78); color: #1c0f18;
-      box-shadow: 0 8px 22px rgba(255,45,120,.5); }
-    #pm-qe-trigger.pm-show { display: flex; animation: pm-qe-pop .14s ease; }
-    #pm-qe-trigger svg { position: relative; }
-    #pm-qe-trigger .pm-qe-trigger-halo {
-      position: absolute; inset: -6px; border-radius: 50%; z-index: -1;
-      border: 1.5px solid rgba(255,110,199,.5);
-      animation: pm-qe-breathe 2.6s ease-in-out infinite;
-    }
+      align-items: center; gap: 4px; padding: 4px; border-radius: 999px;
+      background: rgba(24,18,29,.95); border: 1px solid #2d2436;
+      box-shadow: 0 8px 22px rgba(0,0,0,.45); animation: pm-qe-pop .14s ease; }
+    #pm-qe-trigger.pm-show { display: flex; }
+    #pm-qe-trigger button { all: unset; box-sizing: border-box; width: 26px; height: 26px;
+      border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center;
+      color: #1c0f18; background: linear-gradient(135deg, #ff6ec7, #ff2d78); }
+    #pm-qe-trigger button:hover { filter: brightness(1.1); }
+    #pm-qe-trigger .pm-qe-delete { background: linear-gradient(135deg, #ff7a7a, #dd2d3d); }
     @keyframes pm-qe-pop { from { opacity: 0; transform: scale(.5); } to { opacity: 1; transform: scale(1); } }
-    @keyframes pm-qe-breathe { 0%, 100% { opacity: .5; transform: scale(1); } 50% { opacity: 1; transform: scale(1.12); } }
+
+    /* ---- persistent selection outline(s): floating overlay boxes, never a
+       class/attribute on the page's own elements (see the comment above
+       selectionBoxPool) ---- */
+    .pm-sel-box { position: fixed; pointer-events: none; z-index: ${Z - 2};
+      border: 2px solid #ff3d92; background: rgba(255,61,146,.08); display: none; }
 
     /* ---- full panel ---- */
     #pm-quickedit { all: initial; position: fixed; z-index: ${Z}; display: none;

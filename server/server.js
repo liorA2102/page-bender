@@ -606,6 +606,14 @@ function formatCostLine(totalCostUsd, usage, numTurns) {
     `output_tokens=${u.output_tokens ?? "?"} cache_read=${u.cache_read_input_tokens ?? "?"} cache_creation=${u.cache_creation_input_tokens ?? "?"}`;
 }
 
+// Total token volume for the run — every category the usage object carries,
+// summed into one number the toolbar can show alongside elapsed time.
+function totalTokenCount(usage) {
+  if (!usage) return null;
+  const u = usage;
+  return (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+}
+
 async function runFidelityPass(dir, slug, screenshot) {
   const t0 = Date.now();
   console.log(`[capture] diagnostic pass starting (maxTurns=25)...`);
@@ -661,7 +669,7 @@ async function handlePrompt(req, res) {
     const html = fs.readFileSync(path.join(dir, WORKING_FILE), "utf8");
     console.log(`[prompt] done in ${Date.now() - t0}ms toolCalls=${toolCalls.length} (${toolCalls.join(",")}) session=${sessionId || "none"} ${formatCostLine(totalCostUsd, usage, numTurns)}`);
     if (resultText) console.log(`[prompt] summary: ${resultText}`);
-    sendJson(res, 200, { html, sessionId });
+    sendJson(res, 200, { html, sessionId, elapsedMs: Date.now() - t0, totalTokens: totalTokenCount(usage) });
   } catch (err) {
     // Same distinction runFidelityPass's catch block already makes: a
     // deliberate /agent-cancel (user hit Stop/Escape) surfaces here as the
@@ -690,6 +698,8 @@ async function handlePrompt(req, res) {
       sessionId: err.pfSessionId || null,
       cancelled: !!err.cancelled,
       error: err.cancelled ? undefined : err.message,
+      elapsedMs: Date.now() - t0,
+      totalTokens: totalTokenCount(err.usage),
     });
   }
 }
