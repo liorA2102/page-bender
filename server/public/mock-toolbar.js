@@ -18,6 +18,7 @@
 
   const slug = window.__PM_SLUG;
   const HISTORY_KEY = `pm-history-${slug}`;
+  const LAST_RUN_KEY = `pm-lastrun-${slug}`;
   const HISTORY_CAP = 5;
   // A webpage calling chrome.runtime.sendMessage via externally_connectable
   // has no way to read its own "target extension" implicitly (unlike
@@ -63,7 +64,15 @@
   }
 
   function saveHistoryLocal() {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify({ history, pointer }));
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify({ history, pointer }));
+    } catch (err) {
+      // A large capture can blow the localStorage quota. Undo/redo history is
+      // a convenience; losing it must never throw out of pushHistory and skip
+      // the saveToDisk call below it — that path is how an edit ends up on
+      // screen but never in working.html.
+      console.warn("[page-bender] history not persisted:", err.name);
+    }
   }
 
   function pushHistory(bodyHtml, { persist }) {
@@ -83,12 +92,75 @@
     updateUndoRedoButtons();
   }
 
+  // Saves used to be fire-and-forget, and that is exactly how an edit went
+  // missing: an interrupted or rejected request left the change on screen and
+  // in history but never in working.html, so Export — which downloads the file
+  // — handed back the original text with nothing reporting a problem. Track
+  // the in-flight save so Export can wait on it, and surface failures.
+  let pendingSave = null;
   function saveToDisk(bodyHtml) {
-    fetch("/save", {
+    const p = fetch("/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ slug, bodyHtml }),
-    }).catch((err) => console.warn("[page-bender] save failed:", err.message));
+    })
+      .then(async (r) => {
+        if (r.ok) return true;
+        let detail = `HTTP ${r.status}`;
+        try { const j = await r.json(); if (j && j.error) detail = j.error; } catch {}
+        throw new Error(detail);
+      })
+      .catch((err) => {
+        console.warn("[page-bender] save failed:", err.message);
+        setStatus(`save failed — ${err.message}`);
+        return false;
+      });
+    pendingSave = p;
+    return p;
+  }
+
+  // Everything currently on screen, written and confirmed on disk. Export
+  // calls this first so a download can never be a stale file.
+  async function flushSave() {
+    if (editingEl) editingEl.blur(); // commit an in-progress inline edit first
+    if (pendingSave) await pendingSave.catch(() => false);
+    return saveToDisk(document.body.innerHTML);
+  }
+
+  // The page is reloaded whenever an agent writes working.html directly (a
+  // /prompt run, the capture-time fidelity pass), but history lives in
+  // localStorage — so after such a reload the newest history entry is the
+  // PRE-agent state while the DOM shows the post-agent one. Left alone, Redo
+  // is disabled (pointer is already at the end) so the on-screen state can
+  // never be returned to, and one Undo click applies an older snapshot AND
+  // writes it to disk, destroying the agent's work. Seeding the current DOM
+  // as the newest entry makes Undo step back from it and Redo return to it.
+  function reconcileHistoryWithDom() {
+    const current = document.body.innerHTML;
+    // handleSave strips trailing whitespace before writing, so compare the
+    // same way or every reload would log a spurious "changed" entry.
+    const norm = (t) => String(t).replace(/\s+$/, "");
+    if (!history.length) { history = [current]; pointer = 0; saveHistoryLocal(); return; }
+    if (norm(history[pointer]) === norm(current)) return;
+    history = history.slice(0, pointer + 1);
+    history.push(current);
+    if (history.length > HISTORY_CAP) history.shift();
+    pointer = history.length - 1;
+    saveHistoryLocal();
+  }
+
+  // Status resets to "idle" on every load, so coming back to the tab gave no
+  // sign whether the last run finished. Remember the outcome and replay it.
+  function rememberLastRun(text) {
+    try { localStorage.setItem(LAST_RUN_KEY, JSON.stringify({ text, at: Date.now() })); } catch {}
+  }
+  function restoreLastRunStatus() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(LAST_RUN_KEY) || "null"); } catch {}
+    if (!saved || !saved.text) return;
+    const mins = Math.round((Date.now() - saved.at) / 60000);
+    const ago = mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
+    setStatus(`Last run: ${saved.text} · ${ago}`);
   }
 
   function updateUndoRedoButtons() {
@@ -285,6 +357,16 @@
     selectBtn.classList.toggle("pm-on", on);
     hoverBox.style.display = "none";
     hoverBadge.style.display = "none";
+  }
+
+  // Turning Select off used to hide only the hover preview, leaving the
+  // persistent outline boxes and the chip on screen until some unrelated
+  // action happened to clear them. Kept separate from setSelectMode so that
+  // screenshot mode preempting select (setScreenshotMode) does NOT discard a
+  // selection the user is still building.
+  function exitSelectMode() {
+    setSelectMode(false);
+    clearSelection();
   }
 
   function updateSelectionChip() {
@@ -1257,7 +1339,7 @@
       // the anchor click to not immediately drop out of the mode), so it
       // needs its own explicit way to bail out beyond re-clicking Select.
       e.preventDefault();
-      setSelectMode(false);
+      exitSelectMode();
     }
   });
 
@@ -1332,7 +1414,7 @@
     closeCard();
   });
 
-  selectBtn.addEventListener("click", () => setSelectMode(!selectMode));
+  selectBtn.addEventListener("click", () => { if (selectMode) exitSelectMode(); else setSelectMode(true); });
   screenshotBtn.addEventListener("click", () => setScreenshotMode(!screenshotMode));
   toolbar.querySelector("#pm-chip-clear").addEventListener("click", (e) => {
     e.preventDefault();
@@ -1384,13 +1466,16 @@
       pendingImage = null;
       clearSelection();
     }
-    if (resp.cancelled) setStatus("stopped — edits made so far are kept");
-    else if (resp.error) setStatus(resp.html ? `hit an error, kept partial edits: ${resp.error}` : `error: ${resp.error}`);
+    let outcome;
+    if (resp.cancelled) outcome = "stopped — edits made so far are kept";
+    else if (resp.error) outcome = resp.html ? `hit an error, kept partial edits: ${resp.error}` : `error: ${resp.error}`;
     else {
       const secs = resp.elapsedMs != null ? Math.round(resp.elapsedMs / 1000) : null;
       const tokens = formatTokenCompact(resp.totalTokens);
-      setStatus(secs != null && tokens != null ? `Done. ${secs} Sec, ${tokens} Token` : "done ✓");
+      outcome = secs != null && tokens != null ? `Done. ${secs} Sec, ${tokens} Token` : "done ✓";
     }
+    setStatus(outcome);
+    rememberLastRun(outcome);
   }
   sendBtn.addEventListener("click", sendPrompt);
   instrEl.addEventListener("keydown", (e) => {
@@ -1432,12 +1517,19 @@
     a.click();
     setStatus("diff downloaded");
   }
-  function doHtmlExport() {
+  async function doHtmlExport() {
+    // Export downloads the file on disk, so anything not yet written would be
+    // silently missing from it. Write the current page first and confirm it
+    // landed before handing the user a file.
+    setStatus("saving before export…");
+    const ok = await flushSave();
+    if (!ok) { setStatus("export cancelled — the page could not be saved"); return; }
     // Straight to the server's raw file (never toolbar-injected — see
     // handleExportHtml/injectToolbar in server.js) via a forced-download
-    // response header, no client-side fetch/blob juggling needed.
+    // response header, no client-side fetch/blob juggling needed. The
+    // timestamp keeps a repeat export off any cached copy of an identical URL.
     const a = document.createElement("a");
-    a.href = `/export-html?slug=${encodeURIComponent(slug)}`;
+    a.href = `/export-html?slug=${encodeURIComponent(slug)}&t=${Date.now()}`;
     a.click();
     setStatus("html downloaded");
   }
@@ -1518,8 +1610,13 @@
   }
 
   loadHistory();
+  reconcileHistoryWithDom();
   updateUndoRedoButtons();
   updateSelectionChip();
+  // A returning tab (bfcache / restored session) can hand back the previous
+  // prompt still sitting in the box; start every load with an empty composer.
+  instrEl.value = "";
+  restoreLastRunStatus();
   checkForUpdate();
   setInterval(checkForUpdate, 15 * 60 * 1000);
   if (window.__PM_AGENT_PENDING) {

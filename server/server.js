@@ -861,6 +861,10 @@ function handleExportHtml(req, res, slug) {
     res.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8",
       "Content-Disposition": `attachment; filename="${friendlyDownloadName(dir, slug)}.html"`,
+      // The export URL is otherwise byte-identical every time with no
+      // freshness hints, leaving a repeat download eligible to come from cache
+      // and hand back a version older than the file on disk.
+      "Cache-Control": "no-store, must-revalidate",
     });
     res.end(data);
   });
