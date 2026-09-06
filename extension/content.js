@@ -240,7 +240,32 @@
     });
   }
 
-  function bakeNode(node, iframeBakes) {
+  // Section captures wrap the baked content in a clipped, rounded "stage"
+  // frame (see captureBakedHtml) — fine for ordinary in-flow content, but a
+  // tooltip/dropdown/menu/modal that's a real descendant of the captured
+  // element and already renders PAST that element's own edge on the live
+  // page (almost always via position:fixed/absolute) would otherwise get
+  // silently clipped at the frame's edge instead of appearing as the
+  // floating top layer it actually is. Measured on the LIVE tree, before any
+  // cloning, since that's the only place real viewport rects exist. Only the
+  // outermost overflowing element is kept — a nested overflowing descendant
+  // rides along inside its already-hoisted ancestor's own clone, so hoisting
+  // it separately too would just duplicate it.
+  function findHoistTargets(root) {
+    const rootRect = root.getBoundingClientRect();
+    const candidates = [];
+    for (const el of root.querySelectorAll("*")) {
+      const position = getComputedStyle(el).position;
+      if (position !== "fixed" && position !== "absolute") continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue; // not actually rendered (e.g. a closed dropdown)
+      const overflows = r.left < rootRect.left || r.top < rootRect.top || r.right > rootRect.right || r.bottom > rootRect.bottom;
+      if (overflows) candidates.push({ el, rect: r });
+    }
+    return candidates.filter(({ el }) => !candidates.some(({ el: other }) => other !== el && other.contains(el)));
+  }
+
+  function bakeNode(node, iframeBakes, hoistCtx) {
     if (node.nodeType === Node.TEXT_NODE) return node.cloneNode(true);
     if (node.nodeType !== Node.ELEMENT_NODE) return null;
 
@@ -295,9 +320,31 @@
     }
     if (tag === "option") clone.toggleAttribute("selected", node.selected);
 
+    // Only ever hoist the outermost match — once inside a hoisted subtree,
+    // descendants bake normally into that clone regardless of their own
+    // position/overflow (see findHoistTargets).
+    const shouldHoist = !!(hoistCtx && !hoistCtx.insideHoisted && hoistCtx.hoistMap.has(node));
+    const childCtx = shouldHoist ? { ...hoistCtx, insideHoisted: true } : hoistCtx;
+
     for (const child of node.childNodes) {
-      const baked = bakeNode(child, iframeBakes);
+      const baked = bakeNode(child, iframeBakes, childCtx);
       if (baked) clone.appendChild(baked);
+    }
+
+    if (shouldHoist) {
+      // Neutralize the clone's OWN positioning — it was real coordinates
+      // relative to the live page's viewport, meaningless in the staged
+      // frame's different layout. Inline style wins over any class rule
+      // (short of !important), so this reliably overrides it while every
+      // other captured style (color, font, shadow, border-radius, ...)
+      // still applies untouched. The actual placement is done by the
+      // .pbx-section-overlay wrapper captureBakedHtml puts around this
+      // clone, sized and positioned from the same live rect measured here.
+      clone.style.position = "static";
+      clone.style.top = clone.style.left = clone.style.right = clone.style.bottom = "auto";
+      clone.style.transform = "none";
+      hoistCtx.hoisted.push({ clone, rect: hoistCtx.hoistMap.get(node) });
+      return null;
     }
     return clone;
   }
@@ -322,7 +369,13 @@
     const iframeBakePairs = await Promise.all(iframeEls.map(async (el) => [el, await requestFrameBake(el)]));
     const iframeBakes = new Map(iframeBakePairs.filter(([, html]) => html));
 
-    const baked = bakeNode(root, iframeBakes);
+    // Only section captures get the clipped stage frame (see below) that
+    // hoisting exists to escape — a full-page capture has nothing to hoist
+    // out OF.
+    const hoistCtx = root !== document.body
+      ? { hoistMap: new Map(findHoistTargets(root).map(({ el, rect }) => [el, rect])), hoisted: [], insideHoisted: false }
+      : null;
+    const baked = bakeNode(root, iframeBakes, hoistCtx);
     let bodyEl = baked;
     let stageCss = "";
     if (root !== document.body) {
@@ -386,6 +439,21 @@
         <div class="pbx-section-frame-wrap"><div class="pbx-section-halo"></div><div class="pbx-section-frame"></div></div>
       `;
       bodyEl.querySelector(".pbx-section-frame").appendChild(baked);
+      // Re-attach each hoisted tooltip/dropdown/modal as its own overlay,
+      // positioned from the SAME live rect measured in findHoistTargets —
+      // relative to `rect` (the captured element's own rect) because that's
+      // exactly what .pbx-section-frame-wrap's top-left now corresponds to.
+      const frameWrap = bodyEl.querySelector(".pbx-section-frame-wrap");
+      for (const { clone, rect: r } of hoistCtx.hoisted) {
+        const overlay = document.createElement("div");
+        overlay.className = "pbx-section-overlay";
+        overlay.style.left = `${Math.round(r.left - rect.left)}px`;
+        overlay.style.top = `${Math.round(r.top - rect.top)}px`;
+        overlay.style.width = `${Math.round(r.width)}px`;
+        overlay.style.height = `${Math.round(r.height)}px`;
+        overlay.appendChild(clone);
+        frameWrap.appendChild(overlay);
+      }
       // A dark museum-canvas backdrop with the composer's own signature
       // pink halo bloom behind a plain white mat — same "specimen on
       // display" idea as the toolbar's card, applied to whatever section
@@ -423,16 +491,15 @@
           background: radial-gradient(circle at 28% 30%, rgba(255,110,199,.55), transparent 55%),
                       radial-gradient(circle at 76% 74%, rgba(255,45,120,.5), transparent 55%);
           filter: blur(40px); opacity: .75; }
-        /* No overflow: hidden here — the captured content is live interactive
-           DOM, not a flat screenshot. A tooltip, dropdown, or modal that's a
-           real descendant of the captured element (e.g. a chart tooltip
-           anchored via position:absolute to its wrapper) needs to be able to
-           render past this frame's edge exactly like it does on the live
-           page. Clipping to the rounded corner traded that away for a purely
-           cosmetic flourish; visible corners on an already-square content
-           block are a smaller loss than silently eating part of the UI. */
-        .pbx-section-frame { position: relative; border-radius: 20px; background: ${effectiveBg};
+        .pbx-section-frame { position: relative; border-radius: 20px; overflow: hidden; background: ${effectiveBg};
           box-shadow: 0 30px 90px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06); }
+        /* Elements hoisted out of the clipped frame below (findHoistTargets) —
+           a tooltip/dropdown/modal that already rendered past the captured
+           element's own edge on the live page. Positioned to land in exactly
+           the same spot relative to the frame, but as a sibling that isn't
+           subject to the frame's overflow:hidden, so it reads as a top layer
+           instead of getting silently clipped at the card's rounded edge. */
+        .pbx-section-overlay { position: absolute; z-index: 2; }
       `;
     }
     const container = document.createElement("div");
