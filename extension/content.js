@@ -135,32 +135,97 @@
   // text with a fetched, base64-embedded data URI — every other declared
   // property (weight, style, stretch, unicode-range, ...) is preserved
   // verbatim since the real rule text is never reconstructed, only patched.
+  //
+  // Observed live on CMS: its stylesheets repeat the same @font-face rules
+  // dozens of times, all pointing at font files the site itself 404s on.
+  // Fetching every copy one after another, with no timeout, kept the button
+  // on "Capturing…" long enough to look hung. So each distinct url is
+  // fetched at most once (success or failure is shared by every rule that
+  // names it), fetches are time-boxed, and a rule's src list is tried in
+  // format order (woff2 first, legacy .eot last) until one url loads.
+  const FONT_FETCH_TIMEOUT_MS = 8000;
+  const FONT_FETCH_CONCURRENCY = 6;
+  function fontFormatRank(url) {
+    if (/\.woff2($|[?#])/.test(url)) return 0;
+    if (/\.woff($|[?#])/.test(url)) return 1;
+    if (/\.(ttf|otf)($|[?#])/.test(url)) return 2;
+    if (/\.eot($|[?#])/.test(url)) return 4;
+    return 3;
+  }
+  async function fetchFontDataUri(url) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FONT_FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      // A same-origin fetch to a font that actually needs the site's auth
+      // cookie can come back 401/403 rather than throwing.
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = await res.arrayBuffer();
+      let binary = "";
+      const bytes = new Uint8Array(buf);
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      const mime = /\.woff2($|\?)/.test(url) ? "font/woff2" : /\.woff($|\?)/.test(url) ? "font/woff" : /\.(ttf|otf)($|\?)/.test(url) ? "font/ttf" : "application/octet-stream";
+      return `data:${mime};base64,${btoa(binary)}`;
+    } catch (err) {
+      if (err && err.name === "AbortError") throw new Error(`timed out after ${FONT_FETCH_TIMEOUT_MS}ms`);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   async function embedFontFaces(css) {
     const blocks = css.match(/@font-face\s*\{[^}]*\}/g) || [];
-    let embedded = 0;
-    const failures = [];
-    let result = css;
-    for (const block of blocks) {
-      const urlMatch = block.match(/url\((['"]?)([^'")]+)\1\)/);
-      if (!urlMatch) continue;
-      const url = absolutize(urlMatch[2]);
-      try {
-        const res = await fetch(url);
-        // A same-origin fetch to a font that actually needs the site's auth
-        // cookie can come back 401/403 rather than throwing.
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const buf = await res.arrayBuffer();
-        let binary = "";
-        const bytes = new Uint8Array(buf);
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        const b64 = btoa(binary);
-        const mime = /\.woff2($|\?)/.test(url) ? "font/woff2" : /\.woff($|\?)/.test(url) ? "font/woff" : /\.(ttf|otf)($|\?)/.test(url) ? "font/ttf" : "application/octet-stream";
-        result = result.replace(block, block.replace(urlMatch[0], `url(data:${mime};base64,${b64})`));
-        embedded++;
-      } catch (err) {
-        console.warn("[Page Bender] could not embed font", url, err);
-        failures.push({ url, error: String(err && err.message ? err.message : err) });
+    // Per block: its url() tokens, absolutized, in the order to try them.
+    const plans = blocks.map((block) => {
+      const tokens = Array.from(block.matchAll(/url\((['"]?)([^'")]+)\1\)/g))
+        .filter((m) => !/^data:/i.test(m[2]))
+        .map((m) => ({ token: m[0], url: absolutize(m[2]) }));
+      tokens.sort((a, b) => fontFormatRank(a.url) - fontFormatRank(b.url));
+      return { block, tokens };
+    });
+
+    // One fetch per distinct url, shared by every block that names it.
+    const cache = new Map();
+    const attempt = (url) => {
+      if (!cache.has(url)) cache.set(url, fetchFontDataUri(url).then((dataUri) => ({ dataUri }), (err) => ({ error: String(err && err.message ? err.message : err) })));
+      return cache.get(url);
+    };
+
+    // Resolve each block's first loadable url, a few blocks at a time.
+    const outcomes = new Array(plans.length);
+    let next = 0;
+    async function worker() {
+      while (next < plans.length) {
+        const i = next++;
+        const { tokens } = plans[i];
+        let tried = [];
+        for (const t of tokens) {
+          const r = await attempt(t.url);
+          if (r.dataUri) { outcomes[i] = { token: t.token, dataUri: r.dataUri }; break; }
+          tried.push({ url: t.url, error: r.error });
+        }
+        if (!outcomes[i]) outcomes[i] = { tried };
       }
+    }
+    await Promise.all(Array.from({ length: FONT_FETCH_CONCURRENCY }, worker));
+
+    let result = css;
+    let embedded = 0;
+    const failedUrls = new Map();
+    plans.forEach(({ block, tokens }, i) => {
+      if (!tokens.length) return;
+      const o = outcomes[i];
+      if (o.dataUri) {
+        result = result.replace(block, block.replace(o.token, `url(${o.dataUri})`));
+        embedded++;
+      } else {
+        for (const f of o.tried) failedUrls.set(f.url, f.error);
+      }
+    });
+    // One line per distinct missing file, not one per duplicated rule.
+    const failures = Array.from(failedUrls, ([url, error]) => ({ url, error }));
+    if (failures.length) {
+      console.warn(`[Page Bender] ${failures.length} font file(s) could not be embedded (the text falls back to a system font):`, failures);
     }
     return { css: result, diagnostics: { rulesFound: blocks.length, embedded, failures } };
   }
