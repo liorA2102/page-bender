@@ -1431,8 +1431,30 @@
     sendBtn.classList.add("pm-loading");
     setThinking(true);
     const t0 = Date.now();
-    setStatus("editing… 0s");
-    const ticker = setInterval(() => setStatus(`editing… ${Math.round((Date.now() - t0) / 1000)}s`), 1000);
+    // A run can sit in one tool for minutes, so a bare "editing… 222s" says
+    // nothing about whether anything is happening. The /prompt fetch does not
+    // resolve until the whole run is over, so the only way to report the
+    // current step is to ask the server, which tracks it per slug.
+    let step = "starting up";
+    let stepCount = 0;
+    const render = () => {
+      const secs = Math.round((Date.now() - t0) / 1000);
+      setStatus(`${step}… ${secs}s${stepCount ? ` · step ${stepCount}` : ""}`);
+    };
+    render();
+    const ticker = setInterval(render, 1000);
+    const stepPoll = setInterval(async () => {
+      let d;
+      try {
+        d = await fetch(`/agent-status?slug=${encodeURIComponent(slug)}`).then((r) => r.json());
+      } catch {
+        return; // transient hiccup — next tick retries
+      }
+      if (!d || d.status !== "running") return;
+      if (d.step) step = d.step;
+      if (d.toolCount) stepCount = d.toolCount;
+      render();
+    }, 2000);
     let resp;
     try {
       resp = await fetch("/prompt", {
@@ -1449,6 +1471,7 @@
       resp = { error: err.message };
     }
     clearInterval(ticker);
+    clearInterval(stepPoll);
     sendBtn.disabled = false;
     sendBtn.classList.remove("pm-loading");
     setThinking(false);

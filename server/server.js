@@ -171,7 +171,7 @@ function cors(res, origin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Page-Bender-Agent");
 }
 
 function nameify(input) {
@@ -274,6 +274,183 @@ async function handleCapture(req, res) {
   if (screenshot) fs.writeFileSync(path.join(dir, SCREENSHOT_FILE), screenshot, "utf8");
 
   sendJson(res, 200, { slug, previewUrl: `http://${HOST}:${PORT}/mock/${slug}/${WORKING_FILE}` });
+}
+
+// ---------- agent capture ----------
+// Lets an agent (a Claude session driving Chrome) capture a tab without
+// clicking the toolbar icon. The agent POSTs /agent/capture and waits; the
+// extension's offscreen worker long-polls /agent/next, runs the capture in
+// the named tab, and POSTs /agent/result, which answers the waiting request.
+// The capture itself goes through the normal /capture route, so an agent
+// capture lands in mocks/<slug>/ exactly like a manual one.
+//
+// All three routes require the X-Page-Bender-Agent header. A webpage can only
+// send a custom header cross-origin after a CORS preflight, and cors() never
+// approves a web origin, so a site open in the browser cannot queue captures,
+// claim jobs or forge results. curl and the extension are unaffected.
+const AGENT_HEADER = "x-page-bender-agent";
+const AGENT_POLL_HOLD_MS = 20000;
+const AGENT_DEFAULT_TIMEOUT_MS = 120000;
+// The worker re-polls within ~20s while alive; allow slack for a restart.
+const AGENT_WORKER_STALE_MS = 45000;
+const agentQueue = []; // jobs not yet claimed
+const agentWaiters = new Map(); // job id -> { finish }
+let agentPoll = null; // { res, timer } for the one held /agent/next request
+let agentLastPollAt = 0;
+
+function agentHeaderOk(req, res) {
+  if (req.headers[AGENT_HEADER] === "1") return true;
+  sendJson(res, 403, { error: "missing X-Page-Bender-Agent: 1 header" });
+  return false;
+}
+
+function dispatchAgentJob() {
+  if (!agentPoll || !agentQueue.length) return;
+  const { res, timer } = agentPoll;
+  agentPoll = null;
+  clearTimeout(timer);
+  sendJson(res, 200, agentQueue.shift());
+}
+
+function handleAgentNext(req, res) {
+  if (!agentHeaderOk(req, res)) return;
+  agentLastPollAt = Date.now();
+  // Only one worker exists, so a newer poll supersedes any held one.
+  if (agentPoll) {
+    clearTimeout(agentPoll.timer);
+    agentPoll.res.writeHead(204);
+    agentPoll.res.end();
+  }
+  const timer = setTimeout(() => {
+    if (agentPoll && agentPoll.res === res) agentPoll = null;
+    res.writeHead(204);
+    res.end();
+  }, AGENT_POLL_HOLD_MS);
+  agentPoll = { res, timer };
+  // res, not req: on Node 16+ a GET request's "close" fires as soon as its
+  // (empty) body is read, which would drop the poll immediately.
+  res.on("close", () => {
+    if (agentPoll && agentPoll.res === res) {
+      clearTimeout(timer);
+      agentPoll = null;
+    }
+  });
+  dispatchAgentJob();
+}
+
+function agentWorkerStale(res) {
+  if (Date.now() - agentLastPollAt <= AGENT_WORKER_STALE_MS) return false;
+  sendJson(res, 503, {
+    ok: false,
+    error: "the extension's agent worker is not polling: is Chrome open, and has Page Bender been reloaded in chrome://extensions since it was updated?",
+  });
+  return true;
+}
+
+// Queues a job for the extension and resolves with its result, or with a
+// timeout error if none arrives.
+function runAgentJob(job, timeoutMs, logLine) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      agentWaiters.delete(job.id);
+      const i = agentQueue.indexOf(job);
+      if (i >= 0) agentQueue.splice(i, 1);
+      resolve({ ok: false, error: `no result after ${timeoutMs}ms`, timedOut: true });
+    }, timeoutMs);
+    agentWaiters.set(job.id, { finish: (r) => { clearTimeout(timer); agentWaiters.delete(job.id); resolve(r); } });
+    agentQueue.push(job);
+    console.log(`[agent] queued ${logLine} ${job.id}`);
+    dispatchAgentJob();
+  });
+}
+
+async function handleAgentCapture(req, res) {
+  if (!agentHeaderOk(req, res)) return;
+  const body = JSON.parse((await readBody(req)) || "{}");
+  const { tabId, urlContains, selector, ref } = body;
+  if (tabId == null && !urlContains) return sendJson(res, 400, { ok: false, error: "pass tabId or urlContains" });
+  if (agentWorkerStale(res)) return;
+  const timeoutMs = Math.min(Number(body.timeoutMs) || AGENT_DEFAULT_TIMEOUT_MS, 300000);
+  const job = { id: crypto.randomUUID(), kind: "capture", tabId: tabId ?? null, urlContains: urlContains || null, selector: selector || null, ref: ref ?? null };
+  const result = await runAgentJob(
+    job,
+    timeoutMs,
+    `capture (${tabId != null ? `tab ${tabId}` : `url ~ ${urlContains}`}${selector ? `, selector ${selector}` : ""}${ref != null ? `, ref ${ref}` : ""})`
+  );
+  if (result.ok && result.slug) {
+    // Local paths, so the agent can read the capture straight off disk.
+    const dir = resolveProjectDir(result.slug);
+    result.dir = dir;
+    result.originalFile = path.join(dir, ORIGINAL_FILE);
+    result.workingFile = path.join(dir, WORKING_FILE);
+    if (fs.existsSync(path.join(dir, SCREENSHOT_FILE))) result.screenshotFile = path.join(dir, SCREENSHOT_FILE);
+  }
+  console.log(`[agent] capture ${job.id} ${result.ok ? `done: ${result.slug}` : `failed: ${result.error}`}`);
+  sendJson(res, result.ok ? 200 : result.timedOut ? 504 : 502, result);
+}
+
+// Driving: open, navigate, click, hover, escape, scroll, back, snapshot,
+// close, hosts. The extension enforces the non-prod allowlist and blocks
+// every write request from a driven tab (see background.js); this copy of the
+// rule is the second lock, so a URL off it never even reaches Chrome.
+// Keep it identical to isNonProdHost in background.js: "non-prod" must be one
+// whole dot-separated label of the host name, not the last one, over https.
+const DRIVE_HOST_RULE = "any https host with a whole .non-prod. label";
+const AGENT_SNAPSHOT_DIR = path.join(MOCKS_DIR, "_agent-snapshots");
+
+function driveHostAllowed(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    return u.protocol === "https:" && u.hostname.toLowerCase().split(".").slice(0, -1).includes("non-prod");
+  } catch {
+    return false;
+  }
+}
+
+async function handleAgentDrive(req, res) {
+  if (!agentHeaderOk(req, res)) return;
+  const body = JSON.parse((await readBody(req)) || "{}");
+  const { action, tabId, url, ref, dy } = body;
+  if (!action) return sendJson(res, 400, { ok: false, error: "missing action" });
+  if ((action === "open" || action === "navigate") && !driveHostAllowed(url)) {
+    return sendJson(res, 403, { ok: false, error: `refused: ${url} is not a non-prod host (${DRIVE_HOST_RULE})` });
+  }
+  if (agentWorkerStale(res)) return;
+  const timeoutMs = Math.min(Number(body.timeoutMs) || 60000, 300000);
+  const job = { id: crypto.randomUUID(), kind: "drive", action, tabId: tabId ?? null, url: url || null, ref: ref ?? null, dy: dy ?? null };
+  const result = await runAgentJob(job, timeoutMs, `drive ${action}${tabId != null ? ` tab ${tabId}` : ""}${ref != null ? ` ref ${ref}` : ""}`);
+  // The screenshot comes back as a data URL; write it to disk and hand back a
+  // path instead, so the agent can look at it and the JSON stays small.
+  if (result.screenshot) {
+    fs.mkdirSync(AGENT_SNAPSHOT_DIR, { recursive: true });
+    const file = path.join(AGENT_SNAPSHOT_DIR, `snap-${Date.now().toString(36)}.png`);
+    fs.writeFileSync(file, Buffer.from(result.screenshot.split(",", 2)[1], "base64"));
+    result.screenshotFile = file;
+    delete result.screenshot;
+  }
+  console.log(`[agent] drive ${action} ${job.id} ${result.ok ? `ok: ${result.url || ""}` : `failed: ${result.error}`}`);
+  sendJson(res, result.ok ? 200 : result.timedOut ? 504 : result.refused ? 409 : 502, result);
+}
+
+async function handleAgentResult(req, res) {
+  if (!agentHeaderOk(req, res)) return;
+  const body = JSON.parse((await readBody(req)) || "{}");
+  const waiter = agentWaiters.get(body.id);
+  if (waiter) {
+    const { id, ...result } = body;
+    waiter.finish(result);
+  }
+  sendJson(res, 200, { ok: true, matched: !!waiter });
+}
+
+function handleAgentHealth(req, res) {
+  const sinceMs = agentLastPollAt ? Date.now() - agentLastPollAt : null;
+  sendJson(res, 200, {
+    workerPolling: sinceMs != null && sinceMs <= AGENT_WORKER_STALE_MS,
+    lastPollMsAgo: sinceMs,
+    queued: agentQueue.length,
+    inFlight: agentWaiters.size - agentQueue.length,
+  });
 }
 
 // Finding "where is the thing the user selected" was costing the agent 1-2
@@ -384,6 +561,24 @@ function cleanupTempImages(paths) {
 // already on disk. A starting point, not a tuned number — nowhere near the
 // 150 the diagnostic pass over-corrected to and then walked back; revisit
 // once there's more real usage data on what typical feature work costs.
+// A run can spend minutes inside a single tool, so the status line needs to
+// say what is happening, not just that something is. Tool names are the only
+// progress signal the SDK gives us mid-run; these are their user-facing
+// wording. Anything unmapped falls back to the raw tool name rather than
+// going silent.
+const STEP_LABELS = {
+  Read: "reading the page",
+  Edit: "applying an edit",
+  MultiEdit: "applying edits",
+  Write: "rewriting the page",
+  Bash: "inspecting the page",
+  Grep: "searching the page",
+  Glob: "searching the page",
+  TodoWrite: "planning the change",
+  Task: "delegating a sub-task",
+  WebFetch: "fetching a reference",
+};
+
 async function runAgentTurn({ dir, slug, instruction, selection, images, resumeSessionId, systemPrompt = QUALITY_SYSTEM_PROMPT, maxTurns = 60 }) {
   const filePath = path.join(dir, WORKING_FILE);
   const imagePaths = writeTempImages(dir, images);
@@ -447,13 +642,26 @@ async function runAgentTurn({ dir, slug, instruction, selection, images, resumeS
     // Tracked so a later /agent-status poll can report progress and
     // /agent-cancel can call q.close() to kill the underlying CLI subprocess
     // (confirmed real via sdk.d.ts — not a cosmetic no-op).
-    if (slug) activeQueries.set(slug, { query: q, status: "running", startedAt, resultText: null });
+    if (slug) activeQueries.set(slug, { query: q, status: "running", startedAt, resultText: null, step: "starting up", toolCount: 0 });
+    // Mutate the tracked entry in place as messages arrive so an
+    // /agent-status poll reports the CURRENT step, not just "running".
+    const setStep = (step) => {
+      if (!slug) return;
+      const entry = activeQueries.get(slug);
+      if (!entry) return;
+      entry.step = step;
+      entry.toolCount = toolCalls.length;
+    };
     for await (const msg of q) {
       if (msg.session_id) sessionId = msg.session_id;
       if (msg.type === "assistant" && Array.isArray(msg.message?.content)) {
+        let lastTool = null;
         for (const block of msg.message.content) {
-          if (block.type === "tool_use") toolCalls.push(block.name);
+          if (block.type === "tool_use") { toolCalls.push(block.name); lastTool = block.name; }
         }
+        // No tool call in an assistant message means it is reasoning or
+        // writing its reply, which is worth showing as its own state.
+        setStep(lastTool ? (STEP_LABELS[lastTool] || lastTool) : "thinking");
       }
       if (msg.type === "result") {
         resultText = msg.result || (msg.errors && msg.errors.join("; ")) || null;
@@ -782,7 +990,13 @@ function handleAgentStatus(req, res, slug) {
   if (!slug) return sendJson(res, 400, { error: "missing slug" });
   const entry = activeQueries.get(slug);
   if (!entry) return sendJson(res, 200, { status: "none" });
-  sendJson(res, 200, { status: entry.status, elapsedMs: Date.now() - entry.startedAt, resultText: entry.resultText });
+  sendJson(res, 200, {
+    status: entry.status,
+    elapsedMs: Date.now() - entry.startedAt,
+    resultText: entry.resultText,
+    step: entry.step || null,
+    toolCount: entry.toolCount || 0,
+  });
 }
 
 // q.close() (confirmed in sdk.d.ts) forcefully terminates the underlying CLI
@@ -1036,6 +1250,21 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "POST" && url.pathname === "/capture") {
     return handleCapture(req, res).catch((err) => sendJson(res, 500, { error: err.message }));
+  }
+  if (req.method === "POST" && url.pathname === "/agent/capture") {
+    return handleAgentCapture(req, res).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
+  }
+  if (req.method === "POST" && url.pathname === "/agent/drive") {
+    return handleAgentDrive(req, res).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
+  }
+  if (req.method === "GET" && url.pathname === "/agent/next") {
+    return handleAgentNext(req, res);
+  }
+  if (req.method === "POST" && url.pathname === "/agent/result") {
+    return handleAgentResult(req, res).catch((err) => sendJson(res, 500, { error: err.message }));
+  }
+  if (req.method === "GET" && url.pathname === "/agent/health") {
+    return handleAgentHealth(req, res);
   }
   if (req.method === "POST" && url.pathname === "/prompt") {
     return handlePrompt(req, res).catch((err) => sendJson(res, 500, { error: err.message }));

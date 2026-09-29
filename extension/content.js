@@ -768,6 +768,27 @@
   // server-side (see PLAN.md) — this call resolves in ~1-2s regardless of
   // how long that pass takes, so the mock tab opens right away and the
   // enhancement, if any, is tracked/shown on the mock page itself instead.
+  // The part of a capture both entry points share: bake, screenshot, hand to
+  // the server. Returns the server's response ({ ok, slug, previewUrl } or
+  // { ok: false, error }) plus whether a screenshot made it, and leaves every
+  // bit of UI to the caller.
+  async function bakeAndSend(root) {
+    const { html, fontDiagnostics } = await captureBakedHtml(root);
+
+    // A real screenshot of the current viewport, sent alongside the baked
+    // HTML — the server runs a one-time AI vision pass comparing the two
+    // and fixing whatever the mechanical bake still gets wrong (pseudo-
+    // element edge cases, fonts that couldn't be fetched, anything else).
+    const shot = await send({ type: "PM_CAPTURE_SCREENSHOT" });
+    let screenshot = shot && shot.ok ? shot.dataUrl : null;
+    if (screenshot && root !== document.body) {
+      screenshot = await cropToSelection(screenshot, root.getBoundingClientRect());
+    }
+
+    const resp = await send({ type: "PM_CAPTURE", html, title: document.title, url: location.href, screenshot, fontDiagnostics });
+    return { resp, screenshot };
+  }
+
   async function runCapture(root) {
     captureBtn.disabled = true;
     sectionBtn.disabled = true;
@@ -782,19 +803,7 @@
     // forever with zero visible error. Wrapping the whole thing means any
     // failure mode at least surfaces as a real error in the status pill.
     try {
-      const { html, fontDiagnostics } = await captureBakedHtml(root);
-
-      // A real screenshot of the current viewport, sent alongside the baked
-      // HTML — the server runs a one-time AI vision pass comparing the two
-      // and fixing whatever the mechanical bake still gets wrong (pseudo-
-      // element edge cases, fonts that couldn't be fetched, anything else).
-      const shot = await send({ type: "PM_CAPTURE_SCREENSHOT" });
-      let screenshot = shot && shot.ok ? shot.dataUrl : null;
-      if (screenshot && root !== document.body) {
-        screenshot = await cropToSelection(screenshot, root.getBoundingClientRect());
-      }
-
-      const resp = await send({ type: "PM_CAPTURE", html, title: document.title, url: location.href, screenshot, fontDiagnostics });
+      const { resp, screenshot } = await bakeAndSend(root);
       if (!resp || !resp.ok) {
         labelEl.textContent = "Let's Page Bend";
         setStatus(`capture failed: ${resp && resp.error}`, true);
@@ -946,6 +955,47 @@
 
   window.__pageMockToggle = () => {
     host.style.display = host.style.display === "none" ? "block" : "none";
+  };
+
+  // ---------- agent capture ----------
+  // Entry point for a capture an agent asked for through the local server
+  // (POST /agent/capture), not a click. background.js calls this via
+  // chrome.scripting.executeScript, which runs in this same isolated world,
+  // so it can see this function where the page's own scripts cannot. When
+  // background.js injected this file for an agent job, it set
+  // __pbAgentMode first, so the pill never appears on a page nobody opened
+  // it on. Either way the panel is hidden while the screenshot is taken, or
+  // the pill would land in the image the fidelity pass compares against.
+  // No preview tab is opened: the caller gets the paths back instead.
+  if (window.__pbAgentMode) host.style.display = "none";
+  window.__pbAgentCapture = async (selector, ref) => {
+    let root = document.body;
+    if (ref != null) {
+      // A ref from the agent driver's last snapshot (agent-driver.js).
+      root = window.__pbDriver && window.__pbDriver.element(ref);
+      if (!root) return { ok: false, error: `ref ${ref} not found: take a new snapshot` };
+    } else if (selector) {
+      try {
+        root = document.querySelector(selector);
+      } catch (err) {
+        return { ok: false, error: `invalid selector: ${err.message}` };
+      }
+      if (!root) return { ok: false, error: `no element matches selector: ${selector}` };
+    }
+    const prevDisplay = host.style.display;
+    host.style.display = "none";
+    // Two frames, so the hidden panel is actually off the painted page
+    // before captureVisibleTab reads the pixels.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    try {
+      const { resp, screenshot } = await bakeAndSend(root);
+      if (!resp || !resp.ok) return { ok: false, error: (resp && resp.error) || "capture failed" };
+      return { ok: true, slug: resp.slug, previewUrl: resp.previewUrl, screenshot: !!screenshot, title: document.title, url: location.href };
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) };
+    } finally {
+      if (!window.__pbAgentMode) host.style.display = prevDisplay;
+    }
   };
   }
 })();
