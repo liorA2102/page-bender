@@ -1036,7 +1036,14 @@
         const meta = [pick.team, formatExpiry(pick.expiresAt)].filter(Boolean).join(" · ");
         parts.push(`<span>Exploring <b>${escapeHtml(pick.env)}</b>${meta ? ` (${escapeHtml(meta)})` : ""}.</span>`);
       }
-      if (pick.signedIn == null) parts.push(`<span>Sign-in not checked: Page Bender's agent worker isn't running.</span>`);
+      if (pick.signedIn == null) {
+        // The worker is often just starting (a reload or server restart), so
+        // look again shortly rather than leave the warning up.
+        signInPoll = setInterval(() => loadEnv({ quiet: true }), 5000);
+        parts.push(pick.signInCheck === "worker-down"
+          ? `<span>Sign-in not checked: Page Bender's agent worker isn't running.</span>`
+          : `<span>Couldn't check sign-in: ${escapeHtml(pick.env)} didn't answer.</span>`);
+      }
       envEl.innerHTML = `<span class="pm-env-dot"></span>${parts.join(" ")}`;
     }
     if (st.source === "service" && st.candidates && st.candidates.length > 1) {

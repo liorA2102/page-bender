@@ -7,7 +7,7 @@
       "label": "CMS",
       "envHost": "cms-{env}.non-prod.example.internal",
       "prodHostPattern": "^cms-[a-z]+\\.prod\\.example\\.internal$",
-      "authProbePath": "/user"
+      "authProbePath": "/customer/1"
     }
   }
 }

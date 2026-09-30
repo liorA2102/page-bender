@@ -1213,9 +1213,10 @@ function notFound(res) {
 
 // Finding a running one-click copy of the product (see environments.js).
 // The signed-in check is one authenticated read through the extension; with
-// no worker polling it comes back unknown rather than failing the lookup.
+// no worker polling it comes back unknown, with that reason, rather than
+// failing the lookup.
 async function fetchThroughBrowser(url) {
-  if (Date.now() - agentLastPollAt > AGENT_WORKER_STALE_MS) return null;
+  if (Date.now() - agentLastPollAt > AGENT_WORKER_STALE_MS) return { workerDown: true };
   const result = await runAgentJob({ id: crypto.randomUUID(), kind: "fetch", urls: [url] }, 30000, "fetch (signed-in check)");
   return result.ok && result.results ? result.results[0] : null;
 }

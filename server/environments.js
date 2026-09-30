@@ -240,12 +240,16 @@ function rank(a, b) {
 }
 
 // Whether the user's browser is signed in to that copy: one authenticated
-// read through the extension. 401 means not signed in.
-async function signedIn(product, host, fetchThroughBrowser) {
+// read through the extension. The product's auth wall answers 401 (or 403)
+// before routing, so those mean signed out and any other real answer means
+// past the wall: a missing route answers 404 only once signed in. null means
+// no answer at all, with the reason.
+async function checkSignIn(product, host, fetchThroughBrowser) {
   const r = await fetchThroughBrowser(`https://${host}${product.authProbePath || "/"}`);
-  if (!r) return null;
-  if (r.status === 401 || r.status === 403) return false;
-  return r.ok ? true : null;
+  if (!r || r.workerDown) return { signedIn: null, signInCheck: r && r.workerDown ? "worker-down" : "no-answer" };
+  if (r.status === 401 || r.status === 403) return { signedIn: false };
+  if (r.status > 0) return { signedIn: true };
+  return { signedIn: null, signInCheck: "no-answer" };
 }
 
 export async function findEnvironment({ productKey, pageUrl, force, fetchThroughBrowser }) {
@@ -262,7 +266,7 @@ export async function findEnvironment({ productKey, pageUrl, force, fetchThrough
     const host = hostFor(product, page.env);
     return {
       ok: true, product: key, label: product.label, source: "current-page",
-      pick: { env: page.env, host, signedIn: await signedIn(product, host, fetchThroughBrowser) },
+      pick: { env: page.env, host, ...(await checkSignIn(product, host, fetchThroughBrowser)) },
       candidates: [],
     };
   }
@@ -281,7 +285,7 @@ export async function findEnvironment({ productKey, pageUrl, force, fetchThrough
   // The remembered choice wins while it is still usable.
   const remembered = readJson(CHOICE_FILE, {})[key];
   const pick = candidates.find((c) => c.env === remembered) || candidates[0] || null;
-  if (pick) pick.signedIn = await signedIn(product, pick.host, fetchThroughBrowser);
+  if (pick) Object.assign(pick, await checkSignIn(product, pick.host, fetchThroughBrowser));
 
   return {
     ok: true, product: key, label: product.label, source: "service",
