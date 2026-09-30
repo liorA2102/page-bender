@@ -1,0 +1,13 @@
+{
+  "listTool": "mcp__<server>__<list-environments-tool>",
+  "me": "first.last",
+  "team": "your-team",
+  "products": {
+    "cms": {
+      "label": "CMS",
+      "envHost": "cms-{env}.non-prod.example.internal",
+      "prodHostPattern": "^cms-[a-z]+\\.prod\\.example\\.internal$",
+      "authProbePath": "/user"
+    }
+  }
+}

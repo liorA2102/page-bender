@@ -7,3 +7,7 @@ capture/*
 server/fetch-hosts.local.json
 # Extracted design systems hold real product captures; local only
 design-systems/*
+# One-click environment finder: internal hosts, cached list, remembered choice
+server/environments.local.json
+server/environments.cache.local.json
+server/environments.choice.local.json

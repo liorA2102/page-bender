@@ -21,6 +21,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createTwoFilesPatch } from "diff";
+import { findEnvironment, rememberChoice, readConfig as readEnvironmentsConfig, refreshList as refreshEnvironmentList } from "./environments.js";
 
 const PORT = 8790;
 const HOST = "127.0.0.1";
@@ -1210,6 +1211,33 @@ function notFound(res) {
   res.end("not found");
 }
 
+// Finding a running one-click copy of the product (see environments.js).
+// The signed-in check is one authenticated read through the extension; with
+// no worker polling it comes back unknown rather than failing the lookup.
+async function fetchThroughBrowser(url) {
+  if (Date.now() - agentLastPollAt > AGENT_WORKER_STALE_MS) return null;
+  const result = await runAgentJob({ id: crypto.randomUUID(), kind: "fetch", urls: [url] }, 30000, "fetch (signed-in check)");
+  return result.ok && result.results ? result.results[0] : null;
+}
+
+async function handleEnvironments(req, res, params) {
+  const result = await findEnvironment({
+    productKey: params.get("product"),
+    pageUrl: params.get("url"),
+    force: params.get("refresh") === "1",
+    fetchThroughBrowser,
+  });
+  sendJson(res, result.ok ? 200 : 400, result);
+}
+
+async function handleEnvironmentChoose(req, res) {
+  if (!agentHeaderOk(req, res)) return;
+  const { product, env } = JSON.parse((await readBody(req)) || "{}");
+  if (!product || !env) return sendJson(res, 400, { ok: false, error: "pass product and env" });
+  rememberChoice(product, env);
+  sendJson(res, 200, { ok: true });
+}
+
 function sendJson(res, status, obj) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(obj));
@@ -1330,6 +1358,12 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && url.pathname === "/agent/health") {
     return handleAgentHealth(req, res);
   }
+  if (req.method === "GET" && url.pathname === "/environments") {
+    return handleEnvironments(req, res, url.searchParams).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
+  }
+  if (req.method === "POST" && url.pathname === "/environments/choose") {
+    return handleEnvironmentChoose(req, res).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
+  }
   if (req.method === "POST" && url.pathname === "/prompt") {
     return handlePrompt(req, res).catch((err) => sendJson(res, 500, { error: err.message }));
   }
@@ -1365,4 +1399,6 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`Page Bender server on http://${HOST}:${PORT}`);
+  // Warm the environment list so the first "Mock a feature" never waits on it.
+  if (readEnvironmentsConfig()) refreshEnvironmentList();
 });

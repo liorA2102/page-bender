@@ -63,6 +63,16 @@ git pull
 ```
 (then remove the extension from `chrome://extensions` manually)
 
+### Exploring a one-click copy (optional)
+
+Page Bender can find a running non-prod copy of a product for its agent to
+explore, instead of the page you're on. It asks your team's one-click
+environment service through Claude Code, so that service's MCP server must be
+set up and signed in there. Copy `server/environments.example.json` to
+`server/environments.local.json` and fill in your products' host pattern (kept
+out of git). It never creates or changes an environment; it only picks one
+that's already running.
+
 ## Before you install
 
 The server runs the editing agent with full tool access, including shell
