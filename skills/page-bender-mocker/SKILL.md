@@ -160,7 +160,51 @@ how much behaviour the mock needs: static screens and states are enough to judge
 working logic (validation, rebalancing, pickers) only when the review needs to feel it.
 
 **Pick one family** from the design system's README: the family of the page the feature extends,
-or the product's newest family for a new area. Every screen of the mock uses that one family.
+or the product's newest family for a new area. Every screen of the mock uses that one family by
+default. The one exception is a concept the user picks in B1b from another library the product
+already ships (on CMS: Ant Design Steps chosen for a Legacy-family page, because it shows the
+off-path states on the path itself); the README names that crossing.
+
+### B1b. Close the gaps: research concepts for what the product has never had
+
+Check B1's component list against the design system's `coverage.md` and `components/index.md`.
+Anything the feature needs that the product has no component for is a **gap** (on CMS for Global
+ABT v2: the lifecycle stepper, the variant editor, the share slider, dialogs). Each gap gets
+researched before it is designed, so it is solved the way the product would solve it, not
+invented on the spot.
+
+**Where to look, in this order, stopping at the first good answer:**
+
+1. **The product itself.** Another page or family may already solve it. Drive more pages if the
+   design system didn't cover them (A2's rules apply).
+2. **The component libraries the product already ships.** Read them from the capture: CMS loads Ant
+   Design (`ant-` classes) and MUI (`Mui` classes). A component from a library already in the
+   bundle is the most on-brand answer and the easiest for an implementing agent (for example Ant's
+   Steps for a stepper). Use the library's public docs for its variants and states.
+3. **Established public design systems** (Material, Carbon, Atlassian, Polaris) for the standard
+   way to solve a common pattern.
+4. **Comparable products** for domain-specific concepts (for an experiment tool: how GrowthBook,
+   Statsig or LaunchDarkly show variant splits). Public pages and docs only.
+
+**Propose two or three concepts per gap, then let the user pick.** Each concept states: a name,
+where it comes from (with a link), why it fits this product and this feature, and an
+implementation note (for example "Ant Steps, already in CMS's bundle"). How to present them:
+
+- **In chat, by default:** a short list per gap.
+- **As a concept board when the gap is visual,** meaning its choice turns on layout or
+  interaction shape rather than wording: steppers and progress, editors and multi-part controls,
+  sliders and allocation controls, dialogs and drawers, charts and timelines, tables with unusual
+  structure. A gap about wording or rules (an empty-state message, a validation rule, a label)
+  stays in chat.
+
+A **concept board** is one local HTML page next to the mock (`concepts-<gap>.html`): each concept
+sketched side by side, in the product's visual language (its tokens, its fonts), with the name,
+source and implementation note under each. Its own chrome follows the workspace HTML standard; the
+sketches keep product fidelity. Local only, like the mock.
+
+**Record the outcome** in the mock's folder as `concepts.md`: every gap, the concepts offered, the
+one chosen and why. The README's inferred list then points to it, and B5's implementation map uses
+the chosen concept's implementation note.
 
 ### B2. Design the screens in the product's visual language
 
