@@ -250,12 +250,12 @@ async function signedIn(product, host, fetchThroughBrowser) {
 
 export async function findEnvironment({ productKey, pageUrl, force, fetchThroughBrowser }) {
   const config = readConfig();
-  if (!config) return { ok: false, error: "no environments.local.json: copy environments.example.json and fill it in" };
+  if (!config) return { ok: false, error: "Finding a copy isn't set up: copy server/environments.example.json to environments.local.json and fill it in." };
 
   const page = pageUrl ? identifyPage(config, pageUrl) : null;
   const key = productKey || page?.product;
   const product = key && config.products?.[key];
-  if (!product) return { ok: false, error: pageUrl ? "this page is not a product Page Bender knows" : "unknown product" };
+  if (!product) return { ok: false, error: pageUrl ? "This page isn't a product Page Bender knows yet." : "Unknown product." };
 
   // Already on a copy: use it, no lookup.
   if (page?.env) {

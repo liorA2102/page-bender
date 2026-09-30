@@ -25,10 +25,31 @@ async function postJson(pathName, body) {
   return data;
 }
 
+// The routes the "Mock a feature" card on a live page may call. The card
+// can't reach the server itself (the page's origin isn't allowed), so it
+// asks through here, and only for these.
+const CARD_ROUTES = new Set(["/environments", "/environments/choose", "/feature/start"]);
+
+async function cardRequest(method, pathWithQuery, body) {
+  const pathName = pathWithQuery.split("?")[0];
+  if (!CARD_ROUTES.has(pathName)) throw new Error(`route not allowed from the card: ${pathName}`);
+  const res = await fetch(`${SERVER}${pathWithQuery}`, {
+    method,
+    headers: method === "POST" ? { "Content-Type": "application/json", "X-Page-Bender-Agent": "1" } : {},
+    body: method === "POST" ? JSON.stringify(body || {}) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  return { status: res.status, ...data };
+}
+
 // From content.js on the live page being captured.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
+      if (msg.type === "PM_CARD_REQUEST") {
+        sendResponse(await cardRequest(msg.method || "GET", msg.path, msg.body));
+        return;
+      }
       if (msg.type === "PM_CAPTURE") {
         const data = await postJson("/capture", { html: msg.html, title: msg.title, url: msg.url, screenshot: msg.screenshot, fontDiagnostics: msg.fontDiagnostics });
         sendResponse({ ok: true, ...data });

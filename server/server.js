@@ -1238,6 +1238,16 @@ async function handleEnvironmentChoose(req, res) {
   sendJson(res, 200, { ok: true });
 }
 
+// Mocking a feature from the card. The hosted agent run is the next part of
+// the build; until then the card gets a plain answer instead of a dead end.
+async function handleFeatureStart(req, res) {
+  if (!agentHeaderOk(req, res)) return;
+  const body = JSON.parse((await readBody(req)) || "{}");
+  if (!body.idea || !body.product) return sendJson(res, 400, { ok: false, error: "pass product and idea" });
+  console.log(`[feature] start asked for ${body.product} on ${body.env || "?"}: ${String(body.idea).slice(0, 80)}`);
+  sendJson(res, 501, { ok: false, error: "Mocking isn't built yet: the agent run is the next part of the build." });
+}
+
 function sendJson(res, status, obj) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(obj));
@@ -1363,6 +1373,9 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "POST" && url.pathname === "/environments/choose") {
     return handleEnvironmentChoose(req, res).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
+  }
+  if (req.method === "POST" && url.pathname === "/feature/start") {
+    return handleFeatureStart(req, res).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
   }
   if (req.method === "POST" && url.pathname === "/prompt") {
     return handlePrompt(req, res).catch((err) => sendJson(res, 500, { error: err.message }));
