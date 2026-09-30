@@ -316,6 +316,30 @@
   // outermost overflowing element is kept — a nested overflowing descendant
   // rides along inside its already-hoisted ancestor's own clone, so hoisting
   // it separately too would just duplicate it.
+  // Content that runs past the root's edge but that the live page itself
+  // clips inside a scrolling or overflow-hidden container is not a floating
+  // layer, just the part of a scroll area that is out of view. Observed on
+  // CMS: a virtualised data grid positions its rows absolutely inside its
+  // scroller, so they extend past the grid's edge; they were hoisted out of
+  // the grid, lost the grid's row rules, and stacked as plain text. An
+  // absolutely positioned element is clipped by an overflow ancestor only
+  // when that ancestor is, or contains, its containing block (offsetParent),
+  // so a dropdown whose containing block sits outside the overflow box still
+  // escapes it live, and is still hoisted. Fixed elements are never clipped
+  // this way and are always hoisted.
+  function clippedOnLivePage(el, root, position) {
+    if (position === "fixed") return false;
+    const containingBlock = el.offsetParent;
+    if (!containingBlock) return false;
+    for (let anc = el.parentElement; anc; anc = anc.parentElement) {
+      const cs = getComputedStyle(anc);
+      const clips = cs.overflowX !== "visible" || cs.overflowY !== "visible";
+      if (clips && (anc === containingBlock || anc.contains(containingBlock))) return true;
+      if (anc === root) break;
+    }
+    return false;
+  }
+
   function findHoistTargets(root) {
     const rootRect = root.getBoundingClientRect();
     const candidates = [];
@@ -325,7 +349,7 @@
       const r = el.getBoundingClientRect();
       if (r.width === 0 && r.height === 0) continue; // not actually rendered (e.g. a closed dropdown)
       const overflows = r.left < rootRect.left || r.top < rootRect.top || r.right > rootRect.right || r.bottom > rootRect.bottom;
-      if (overflows) candidates.push({ el, rect: r });
+      if (overflows && !clippedOnLivePage(el, root, position)) candidates.push({ el, rect: r });
     }
     return candidates.filter(({ el }) => !candidates.some(({ el: other }) => other !== el && other.contains(el)));
   }
@@ -427,7 +451,9 @@
   // dressing it up doesn't touch anything mock-toolbar.js's undo/diff/save
   // logic treats as "the real page" (that's still exactly the one <div>
   // holding the untouched baked clone, unchanged from before).
-  async function captureBakedHtml(root = document.body) {
+  // opts.keepAncestors is for agent captures only (see __pbAgentCapture):
+  // the manual section capture never passes it, so its output is unchanged.
+  async function captureBakedHtml(root = document.body, opts = {}) {
     const iframeEls = root.tagName && root.tagName.toLowerCase() === "iframe"
       ? [root]
       : Array.from(root.querySelectorAll ? root.querySelectorAll("iframe") : []);
@@ -461,6 +487,24 @@
       // deliberately excludes.
       const rect = root.getBoundingClientRect();
       baked.style.width = `${Math.round(rect.width)}px`;
+      // Same "missing ancestor" problem again, for inherited text styles.
+      // Typography usually comes down from <body> or a layout wrapper, and
+      // the stage frame below sets its own panel font on its <body>, so a
+      // captured element that inherits its font rendered in Page Bender's
+      // font instead of the product's. Observed on CMS: the Apps "Add"
+      // button inherits Open Sans and came out in PBX Chrome Sans. Pinning
+      // the live computed values on the root restores them, and its children
+      // inherit from it as they did on the real page. Only a value that
+      // matches the parent's (so is inherited) is pinned: a value the
+      // element sets itself comes back from its own CSS rules, and pinning
+      // it inline would override its :hover and :focus variants.
+      const liveCs = getComputedStyle(root);
+      const parentCs = root.parentElement ? getComputedStyle(root.parentElement) : null;
+      for (const prop of ["font-family", "font-size", "font-weight", "font-style", "line-height", "letter-spacing", "color", "text-transform"]) {
+        const value = liveCs.getPropertyValue(prop);
+        const inherited = !parentCs || parentCs.getPropertyValue(prop) === value;
+        if (inherited && !baked.style.getPropertyValue(prop)) baked.style.setProperty(prop, value);
+      }
       // Same "missing ancestor" problem as the width fix above, but for
       // background color instead of layout: plenty of components (this
       // table included) don't paint their own background at all — they're
@@ -503,7 +547,30 @@
         </div>
         <div class="pbx-section-frame-wrap"><div class="pbx-section-halo"></div><div class="pbx-section-frame"></div></div>
       `;
-      bodyEl.querySelector(".pbx-section-frame").appendChild(baked);
+      // A section capture keeps only the picked element, so any product
+      // rule written against a wrapper above it ("links inside the customers
+      // table area are teal", "grid rows inside the grid root lay out as
+      // flex rows") stopped matching: on CMS the data grid's rows stacked and
+      // table links fell back to blue. With keepAncestors, the element is
+      // re-nested inside empty copies of its real ancestors (same tag, id,
+      // classes and attributes, none of their other children), so those
+      // rules match again. display: contents on the copies (see stageCss)
+      // keeps them from adding any box, padding or background of their own,
+      // while inheritance and selector matching still pass through them.
+      let frameChild = baked;
+      if (opts.keepAncestors) {
+        for (let anc = root.parentElement; anc && anc !== document.body && anc !== document.documentElement; anc = anc.parentElement) {
+          const copy = document.createElement(anc.tagName.toLowerCase());
+          for (const attr of anc.attributes) {
+            if (attr.name === "style" || attr.name.startsWith("on")) continue;
+            copy.setAttribute(attr.name, attr.value);
+          }
+          copy.classList.add("pbx-ancestor");
+          copy.appendChild(frameChild);
+          frameChild = copy;
+        }
+      }
+      bodyEl.querySelector(".pbx-section-frame").appendChild(frameChild);
       // Re-attach each hoisted tooltip/dropdown/modal as its own overlay,
       // positioned from the SAME live rect measured in findHoistTargets —
       // relative to `rect` (the captured element's own rect) because that's
@@ -575,6 +642,7 @@
     const absolutizedCss = absolutizeCssUrls(rawCss);
     const { css: finalCss, diagnostics: fontDiag } = await embedFontFaces(absolutizedCss);
     const styleBlock = finalCss ? `<style>${finalCss}</style>\n` : "";
+    if (stageCss && opts.keepAncestors) stageCss += "\n.pbx-ancestor { display: contents !important; }\n";
     const stageStyleBlock = stageCss ? `<style>${stageCss}</style>\n` : "";
     const fontDiagnostics = { ...fontDiag, sheetsSkippedCrossOrigin: skippedSheets };
     // documentElement's own attributes (class, lang, dir, data-*, ...) — NOT
@@ -772,8 +840,8 @@
   // the server. Returns the server's response ({ ok, slug, previewUrl } or
   // { ok: false, error }) plus whether a screenshot made it, and leaves every
   // bit of UI to the caller.
-  async function bakeAndSend(root) {
-    const { html, fontDiagnostics } = await captureBakedHtml(root);
+  async function bakeAndSend(root, opts = {}) {
+    const { html, fontDiagnostics } = await captureBakedHtml(root, opts);
 
     // A real screenshot of the current viewport, sent alongside the baked
     // HTML — the server runs a one-time AI vision pass comparing the two
@@ -968,7 +1036,9 @@
   // the pill would land in the image the fidelity pass compares against.
   // No preview tab is opened: the caller gets the paths back instead.
   if (window.__pbAgentMode) host.style.display = "none";
-  window.__pbAgentCapture = async (selector, ref) => {
+  // keepAncestors defaults on here: component extraction wants the element
+  // styled exactly as it sits in the product (see captureBakedHtml).
+  window.__pbAgentCapture = async (selector, ref, { keepAncestors = true } = {}) => {
     let root = document.body;
     if (ref != null) {
       // A ref from the agent driver's last snapshot (agent-driver.js).
@@ -986,9 +1056,16 @@
     host.style.display = "none";
     // Two frames, so the hidden panel is actually off the painted page
     // before captureVisibleTab reads the pixels.
-    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    // Capped by a timer, because Chrome stops delivering animation frames to
+    // a window that is hidden or covered, which is where an agent's window
+    // often sits: a bare double-rAF there never resolved and hung the whole
+    // capture.
+    await new Promise((r) => {
+      requestAnimationFrame(() => requestAnimationFrame(r));
+      setTimeout(r, 150);
+    });
     try {
-      const { resp, screenshot } = await bakeAndSend(root);
+      const { resp, screenshot } = await bakeAndSend(root, { keepAncestors });
       if (!resp || !resp.ok) return { ok: false, error: (resp && resp.error) || "capture failed" };
       return { ok: true, slug: resp.slug, previewUrl: resp.previewUrl, screenshot: !!screenshot, title: document.title, url: location.href };
     } catch (err) {

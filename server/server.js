@@ -171,7 +171,7 @@ function cors(res, origin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Page-Bender-Agent");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Page-Bender-Agent, X-Page-Bender-Version");
 }
 
 function nameify(input) {
@@ -297,6 +297,8 @@ const agentQueue = []; // jobs not yet claimed
 const agentWaiters = new Map(); // job id -> { finish }
 let agentPoll = null; // { res, timer } for the one held /agent/next request
 let agentLastPollAt = 0;
+let agentExtensionVersion = null; // reported by the offscreen worker on each poll
+const agentPollers = new Map(); // "origin vVersion" -> last poll time
 
 function agentHeaderOk(req, res) {
   if (req.headers[AGENT_HEADER] === "1") return true;
@@ -315,6 +317,12 @@ function dispatchAgentJob() {
 function handleAgentNext(req, res) {
   if (!agentHeaderOk(req, res)) return;
   agentLastPollAt = Date.now();
+  agentExtensionVersion = req.headers["x-page-bender-version"] || agentExtensionVersion;
+  // Every distinct poller seen, keyed by extension origin and version. More
+  // than one live entry means two installs (another Chrome profile, say) are
+  // claiming jobs, so a job can land on one that was never reloaded.
+  const pollerKey = `${req.headers.origin || "no-origin"} v${req.headers["x-page-bender-version"] || "?"}`;
+  agentPollers.set(pollerKey, Date.now());
   // Only one worker exists, so a newer poll supersedes any held one.
   if (agentPoll) {
     clearTimeout(agentPoll.timer);
@@ -367,11 +375,11 @@ function runAgentJob(job, timeoutMs, logLine) {
 async function handleAgentCapture(req, res) {
   if (!agentHeaderOk(req, res)) return;
   const body = JSON.parse((await readBody(req)) || "{}");
-  const { tabId, urlContains, selector, ref } = body;
+  const { tabId, urlContains, selector, ref, keepAncestors } = body;
   if (tabId == null && !urlContains) return sendJson(res, 400, { ok: false, error: "pass tabId or urlContains" });
   if (agentWorkerStale(res)) return;
   const timeoutMs = Math.min(Number(body.timeoutMs) || AGENT_DEFAULT_TIMEOUT_MS, 300000);
-  const job = { id: crypto.randomUUID(), kind: "capture", tabId: tabId ?? null, urlContains: urlContains || null, selector: selector || null, ref: ref ?? null };
+  const job = { id: crypto.randomUUID(), kind: "capture", tabId: tabId ?? null, urlContains: urlContains || null, selector: selector || null, ref: ref ?? null, keepAncestors: keepAncestors !== false };
   const result = await runAgentJob(
     job,
     timeoutMs,
@@ -432,6 +440,56 @@ async function handleAgentDrive(req, res) {
   sendJson(res, result.ok ? 200 : result.timedOut ? 504 : result.refused ? 409 : 502, result);
 }
 
+// Authenticated reads through the user's browser login (see offscreen.js):
+// a batch of GET URLs in, one result per URL out, bodies included. Hosts come
+// from a local, gitignored file so the public repo never names an internal
+// host; the extension holds their fingerprints as its own, second check. Any
+// whole "non-prod" host label is allowed too, as for driving.
+const FETCH_HOSTS_FILE = path.join(__dirname, "fetch-hosts.local.json");
+const FETCH_MAX_BATCH = 500;
+
+function readFetchHosts() {
+  try {
+    return new Set(JSON.parse(fs.readFileSync(FETCH_HOSTS_FILE, "utf8")).map((h) => String(h).toLowerCase()));
+  } catch {
+    return new Set();
+  }
+}
+
+function fetchHostAllowed(rawUrl, hosts) {
+  try {
+    const u = new URL(rawUrl);
+    if (u.protocol !== "https:") return false;
+    const host = u.hostname.toLowerCase();
+    return host.split(".").slice(0, -1).includes("non-prod") || hosts.has(host);
+  } catch {
+    return false;
+  }
+}
+
+async function handleAgentFetch(req, res) {
+  if (!agentHeaderOk(req, res)) return;
+  const body = JSON.parse((await readBody(req)) || "{}");
+  const urls = (body.urls || (body.url ? [body.url] : [])).map((u) => String(u).trim()).filter(Boolean);
+  if (!urls.length) return sendJson(res, 400, { ok: false, error: "pass url or urls" });
+  if (urls.length > FETCH_MAX_BATCH) return sendJson(res, 400, { ok: false, error: `batch too large (${urls.length}), max ${FETCH_MAX_BATCH}` });
+  const hosts = readFetchHosts();
+  const rejected = urls.filter((u) => !fetchHostAllowed(u, hosts));
+  // A batch with one bad URL is refused whole, before anything is fetched.
+  if (rejected.length) {
+    return sendJson(res, 403, { ok: false, error: "url(s) not on the fetch allowlist (server/fetch-hosts.local.json, or a non-prod host)", rejected: rejected.slice(0, 10), rejectedCount: rejected.length });
+  }
+  if (agentWorkerStale(res)) return;
+  // The browser paces itself between URLs, so the wait scales with the batch.
+  const timeoutMs = Math.min(Number(body.timeoutMs) || Math.max(120000, 20000 + 3000 * urls.length), 30 * 60000);
+  const job = { id: crypto.randomUUID(), kind: "fetch", urls };
+  const result = await runAgentJob(job, timeoutMs, `fetch of ${urls.length} url(s)`);
+  const results = result.results || [];
+  const failed = results.filter((r) => !r.ok).length;
+  console.log(`[agent] fetch ${job.id} ${result.ok ? `${results.length - failed} ok, ${failed} failed` : `failed: ${result.error}`}`);
+  sendJson(res, result.ok ? 200 : result.timedOut ? 504 : 502, result);
+}
+
 async function handleAgentResult(req, res) {
   if (!agentHeaderOk(req, res)) return;
   const body = JSON.parse((await readBody(req)) || "{}");
@@ -447,6 +505,9 @@ function handleAgentHealth(req, res) {
   const sinceMs = agentLastPollAt ? Date.now() - agentLastPollAt : null;
   sendJson(res, 200, {
     workerPolling: sinceMs != null && sinceMs <= AGENT_WORKER_STALE_MS,
+    extensionVersion: agentExtensionVersion,
+    pollers: Array.from(agentPollers, ([k, t]) => ({ poller: k, lastPollMsAgo: Date.now() - t })).filter((p) => p.lastPollMsAgo < 120000),
+    expectedVersion: (() => { try { return JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "extension", "manifest.json"), "utf8")).version; } catch { return null; } })(),
     lastPollMsAgo: sinceMs,
     queued: agentQueue.length,
     inFlight: agentWaiters.size - agentQueue.length,
@@ -1256,6 +1317,9 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "POST" && url.pathname === "/agent/drive") {
     return handleAgentDrive(req, res).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
+  }
+  if (req.method === "POST" && url.pathname === "/agent/fetch") {
+    return handleAgentFetch(req, res).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
   }
   if (req.method === "GET" && url.pathname === "/agent/next") {
     return handleAgentNext(req, res);

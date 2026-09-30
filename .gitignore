@@ -3,3 +3,7 @@ mocks/*
 capture/*
 .DS_Store
 *.log
+# Hosts the agent fetch route may read; internal names, never published
+server/fetch-hosts.local.json
+# Extracted design systems hold real product captures; local only
+design-systems/*

@@ -130,6 +130,7 @@ async function runAgentCapture(job) {
       await chrome.tabs.update(tab.id, { active: true });
       await new Promise((r) => setTimeout(r, 400));
     }
+    await assertTabVisible(tab.id);
     const [{ result: injected }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => !!window.__pageMockInjected,
@@ -142,10 +143,10 @@ async function runAgentCapture(job) {
     }
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: (selector, ref) => (window.__pbAgentCapture
-        ? window.__pbAgentCapture(selector, ref)
+      func: (selector, ref, keepAncestors) => (window.__pbAgentCapture
+        ? window.__pbAgentCapture(selector, ref, { keepAncestors })
         : { ok: false, error: "Page Bender on this tab predates agent capture: reload the tab and retry" }),
-      args: [job.selector || null, job.ref ?? null],
+      args: [job.selector || null, job.ref ?? null, job.keepAncestors !== false],
     });
     return result || { ok: false, error: "capture returned nothing" };
   } catch (err) {
@@ -278,6 +279,17 @@ async function requireDrivenTab(tabId) {
   return tab;
 }
 
+// Chrome throttles timers and stops animation frames in a window that is
+// minimized or covered, so a drive or capture there crawls or hangs, and
+// its screenshot can come back stale. Check first and say so, rather than
+// letting the job run into the ceiling.
+async function assertTabVisible(tabId) {
+  const [{ result: state }] = await chrome.scripting.executeScript({ target: { tabId }, func: () => document.visibilityState });
+  if (state === "hidden") {
+    throw new Error("the agent's Chrome window is hidden (minimized or covered by another window): keep it visible on screen while the agent works, then retry");
+  }
+}
+
 async function injectDriver(tabId) {
   await chrome.scripting.executeScript({ target: { tabId }, files: ["agent-driver.js"] });
 }
@@ -302,6 +314,7 @@ async function snapshotTab(tab) {
   }
   // Wait for the page itself to go quiet (agent-driver.js settle) before
   // reading it. A fixed delay answered while CMS still showed "Loading…".
+  await assertTabVisible(tab.id);
   const settled = await callDriver(tab.id, "settle");
   const outline = { ...(await callDriver(tab.id, "snapshot")), settled };
   let screenshot = null;
@@ -324,6 +337,13 @@ async function runAgentDrive(job) {
     }
     if (action === "hosts") return { ok: true, rule: DRIVE_HOST_RULE };
     const tab = await requireDrivenTab(job.tabId);
+    if (action === "styles") {
+      // Answers with the census alone, no snapshot or screenshot: it is read
+      // many times per page and the outline would only repeat itself.
+      await assertTabVisible(tab.id);
+      await callDriver(tab.id, "settle");
+      return await callDriver(tab.id, "styles");
+    }
     let step = { ok: true };
     if (action === "navigate") {
       assertDriveHost(job.url);
@@ -356,6 +376,12 @@ async function runAgentDrive(job) {
     const after = await requireDrivenTab(tab.id);
     return { ...(await snapshotTab(after)), step };
   } catch (err) {
+    // Chrome's own wording when the tab never loaded ("Frame with ID 0 is
+    // showing error page") says nothing about why. The usual cause on an
+    // internal host is the VPN, so say that.
+    if (/showing error page/i.test(err.message)) {
+      return { ok: false, error: "the page did not load (Chrome is showing its error page): check the VPN, and that the host opens in a normal tab", tabId: job.tabId ?? null };
+    }
     return { ok: false, error: err.message };
   }
 }

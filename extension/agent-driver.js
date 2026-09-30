@@ -115,13 +115,22 @@
       let lastChange = Date.now();
       const obs = new MutationObserver(() => { lastChange = Date.now(); });
       obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+      // The timeout is checked first and the loading check is guarded: if
+      // that check ever threw, the promise would never resolve and the whole
+      // drive would hang with no error anywhere.
       const tick = setInterval(() => {
         const waited = Date.now() - started;
-        const quiet = Date.now() - lastChange >= quietMs;
-        if ((quiet && !loadingVisible()) || waited >= timeoutMs) {
+        let loading = false;
+        let checkError = null;
+        try {
+          loading = Date.now() - lastChange >= quietMs ? loadingVisible() : true;
+        } catch (err) {
+          checkError = err.message;
+        }
+        if (waited >= timeoutMs || checkError || !loading) {
           clearInterval(tick);
           obs.disconnect();
-          resolveSettle({ settledMs: waited, timedOut: waited >= timeoutMs });
+          resolveSettle({ settledMs: waited, timedOut: waited >= timeoutMs, ...(checkError ? { checkError } : {}) });
         }
       }, 150);
     });
@@ -207,10 +216,87 @@
     return { ok: true, scrollY: Math.round(scrollY) };
   }
 
+  // ---------- style census ----------
+  // What the page actually paints, counted across visible elements: the raw
+  // material for design tokens. Counting real usage (not reading stylesheet
+  // text) keeps dead CSS out, and the counts show which value is the system
+  // and which is a one-off. Custom properties declared on :root come along as
+  // declared, since they are often the product's own token names.
+  function bump(map, key, n = 1) {
+    if (key == null || key === "") return;
+    map.set(key, (map.get(key) || 0) + n);
+  }
+
+  function top(map, limit = 30) {
+    return Array.from(map, ([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count).slice(0, limit);
+  }
+
+  const TRANSPARENT = /^(transparent|rgba\(\s*0,\s*0,\s*0,\s*0\s*\))$/;
+
+  function rootCustomProperties() {
+    const out = {};
+    const cs = getComputedStyle(document.documentElement);
+    for (let i = 0; i < cs.length; i++) {
+      const name = cs[i];
+      if (name.startsWith("--")) out[name] = cs.getPropertyValue(name).trim();
+    }
+    return out;
+  }
+
+  function styles() {
+    const text = new Map(), bg = new Map(), border = new Map(), family = new Map(), size = new Map();
+    const weight = new Map(), radius = new Map(), shadow = new Map(), padding = new Map(), gap = new Map();
+    // Type pairs (size/weight/line-height) weighted by characters, so body
+    // text outranks a single large heading, which is what "body size" means.
+    const typeScale = new Map();
+    let counted = 0;
+    const all = document.body ? document.body.getElementsByTagName("*") : [];
+    for (let i = 0; i < all.length && counted < 6000; i++) {
+      const el = all[i];
+      if (!isVisible(el)) continue;
+      counted++;
+      const cs = getComputedStyle(el);
+      const ownText = Array.from(el.childNodes).filter((n) => n.nodeType === 3).map((n) => n.nodeValue.trim()).join("");
+      if (ownText) {
+        bump(text, cs.color, ownText.length);
+        bump(family, cs.fontFamily, ownText.length);
+        bump(size, cs.fontSize, ownText.length);
+        bump(weight, cs.fontWeight, ownText.length);
+        bump(typeScale, `${cs.fontSize} / ${cs.fontWeight} / ${cs.lineHeight}`, ownText.length);
+      }
+      if (!TRANSPARENT.test(cs.backgroundColor)) bump(bg, cs.backgroundColor);
+      if (cs.borderTopStyle !== "none" && parseFloat(cs.borderTopWidth) > 0) bump(border, `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`);
+      if (cs.borderTopLeftRadius !== "0px") bump(radius, cs.borderRadius);
+      if (cs.boxShadow !== "none") bump(shadow, cs.boxShadow);
+      if (cs.padding !== "0px") bump(padding, cs.padding);
+      if (cs.display.includes("flex") || cs.display.includes("grid")) {
+        if (cs.gap && cs.gap !== "normal" && cs.gap !== "0px") bump(gap, cs.gap);
+      }
+    }
+    return {
+      ok: true,
+      url: location.href,
+      elementsCounted: counted,
+      rootCustomProperties: rootCustomProperties(),
+      body: (() => { const cs = getComputedStyle(document.body); return { background: cs.backgroundColor, color: cs.color, fontFamily: cs.fontFamily, fontSize: cs.fontSize }; })(),
+      textColors: top(text),
+      backgrounds: top(bg),
+      borders: top(border, 20),
+      fontFamilies: top(family, 10),
+      fontSizes: top(size, 20),
+      fontWeights: top(weight, 10),
+      typeScale: top(typeScale, 20),
+      radii: top(radius, 15),
+      shadows: top(shadow, 10),
+      paddings: top(padding, 20),
+      gaps: top(gap, 15),
+    };
+  }
+
   // Lets a capture job name an element by snapshot ref instead of a selector.
   function element(ref) {
     return resolve(ref).el || null;
   }
 
-  window.__pbDriver = { snapshot, click, hover, escape, scroll, element, settle };
+  window.__pbDriver = { snapshot, click, hover, escape, scroll, element, settle, styles };
 })();
