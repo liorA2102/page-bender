@@ -1,6 +1,6 @@
 ---
 name: page-bender-mocker
-description: Turn a PRD or a raw idea into a high-fidelity HTML mock of a real product, built from that product's own captured pages. The agent drives the product in the user's browser through Page Bender (non-prod hosts only, every write blocked), captures real pages and components, extracts a dated design system (tokens, components, page shell, coverage), then builds the mock from it. Use when the user says "mock this PRD", "mock this idea in <product>", "build a design system for <product>", "extract <product>'s design system", "capture <product>'s components", or shares a PRD or idea together with a non-prod URL. Do NOT use for editing an existing captured mock by chat (that is the Page Bender toolbar), or for prototypes that should follow the workspace HTML standard rather than a real product.
+description: Turn a PRD or a raw idea into a high-fidelity HTML mock of a real product, designed in that product's own visual language and dressed in its captured parts. The agent drives the product in the user's browser through Page Bender (non-prod hosts only, every write blocked), captures real pages and components, extracts a dated design system (tokens, components, page shell, coverage), then designs the mock with it and swaps in captured parts where they win. Use when the user says "mock this PRD", "mock this idea in <product>", "build a design system for <product>", "extract <product>'s design system", "capture <product>'s components", or shares a PRD or idea together with a non-prod URL. Do NOT use for editing an existing captured mock by chat (that is the Page Bender toolbar), or for prototypes that should follow the workspace HTML standard rather than a real product.
 ---
 
 # Page Bender Mocker
@@ -11,9 +11,18 @@ Two jobs, run in order, and the second reuses the first:
   components, and write a dated design-system folder.
 - **B. Mock.** Build the mock of a PRD or idea from that folder.
 
-The governing rule for both: **the mock's implementation stays as close to the real production
-product as possible.** Every value and component either comes from a capture, or is labelled
-inferred in the README. Nothing is invented silently.
+**What a mock is for.** Its first job is to promote the feature: make the idea obvious and look
+like the product at its best. It is not necessarily what gets built, though a mock the implementing
+agent can follow without inventing new UI is a real bonus, delivered through the README's
+implementation map rather than by forcing the page to be literal fragments.
+
+**What "close to production" means.** The mock looks like the product at its best: its measured
+colours, type and spacing, its real logo and icons, one coherent visual family per screen, and
+captured parts wherever a captured part is clearly better than a drawn one (the shell nearly
+always). Every value either comes from a capture or is labelled in the README. Nothing is
+invented silently. Literal fidelity of every fragment is not the goal: a screen assembled from a
+product's oldest parts, or from parts of different generations, is faithful piece by piece and
+wrong as a whole (measured on CMS, 30 Sep 2026: judged "very poor" against a designed mock).
 
 ## Before anything: the tool and its limits
 
@@ -139,46 +148,83 @@ the tokens in one short table, and anything that looked off.
 
 ## B. Mock from a PRD or idea
 
+Design first, then swap in captured parts. Proven on CMS (Global ABT v2, 30 Sep 2026): a designed
+mock with CMS's captured sidebar, fonts, buttons and pills swapped in beat both the designed mock
+alone and a mock assembled only from captured fragments.
+
 ### B1. Understand the ask before building
 
 Read the PRD. List the screens and states it needs, and which checklist components each uses. If
-it is a raw idea, propose that screen list in chat and wait for agreement before building.
+it is a raw idea, propose that screen list in chat and wait for agreement before building. Settle
+how much behaviour the mock needs: static screens and states are enough to judge the design;
+working logic (validation, rebalancing, pickers) only when the review needs to feel it.
 
-### B2. Build from real markup, not from scratch
+**Pick one family** from the design system's README: the family of the page the feature extends,
+or the product's newest family for a new area. Every screen of the mock uses that one family.
 
-The highest-fidelity route, and the default:
+### B2. Design the screens in the product's visual language
 
-1. Start from `shell.html` (real navigation, header and CSS) and save it as the mock file.
-2. Replace the content area with the new screen, **assembled from the markup in
-   `components/*.html`**, keeping their real class names so the product's own stylesheet (already
-   inside the shell) styles them. Change text and structure, not styling.
-3. New styling goes in one small `<style>` block at the end, using only `tokens.css` values.
-4. Anything the product has no component for is **inferred**: built from the nearest real one,
-   and listed in the README.
+Compose each screen with real design judgment (use the `frontend-design` skill when it is
+available), working from:
 
-Data in the mock is either real (a small sample only: a few rows, never a full dataset) or
-labelled illustrative in the README.
+- `tokens.json` for the chosen family: colours, type scale, radii, shadows, spacing. Declare them
+  as custom properties once and read only those.
+- The product's layout conventions, measured from `shell.html` and the pages: sidebar width,
+  header band, content ground, card surfaces, table density.
+- The real logo and icons from `assets/` or the captures, never redrawn.
 
-### B3. Rules the mock follows
+Structure and hierarchy are the agent's to design; values are the product's to dictate. A screen
+that needs something the product has never had (a stepper, a variant editor) is designed in the
+product's language and listed as **inferred** in the README.
 
-- **Product fidelity wins over the workspace HTML standard.** A mock of a product surface uses
-  the product's measured values, even where the standard would ask otherwise (contrast, body size,
-  font stack). The standard itself says it does not govern real product UI. Every such deviation is
-  listed in the README, never silently corrected in the mock.
-- **No commentary on the page.** No review chips, "new" markers, notes or footers. The mock shows
-  only the product. Provenance goes in the README.
+### B3. Swap in captured parts where they are a clear win
+
+After the screens are designed, replace drawn parts with captured ones only where the captured
+part is clearly better and belongs to the chosen family. On CMS that was:
+
+- **The shell:** the real sidebar markup, with only the rules naming its classes
+  (`ds-mock-kit.py`: `fragment()` then `rules_naming()`). Nearly always a win.
+- **Fonts:** embed only the faces the mock uses, from `css/fonts.css`.
+- **Buttons and status pills:** their measured values (or real markup when it fits the design).
+- Anything else only if it is the same family and at least as good as the designed version.
+
+Never mix families on one screen, and never pick a part just because it was captured. Lessons from
+composing with captures: put a fragment back inside the product's own containers (its rules are
+scoped to them); a captured dropdown's content lives in the capture's `.pbx-section-overlay`; read
+the product's markup before templating it (CMS puts `data-qa-id` before `class`, and draws
+breadcrumb separators with `a:after`), and key text replacements on stable attributes such as
+`data-qa-id`, not on class names.
+
+### B4. Rules the mock follows
+
+- **Product fidelity wins over the workspace HTML standard** on a product surface: the product's
+  fonts, sizes, colours and contrast, even where the standard would ask otherwise. Every such
+  deviation is listed in the README, never silently corrected.
+- **No commentary on the page.** No review chips, "new" markers, notes or footers. A thin strip of
+  mock controls (switch screen, state or theme) is fine; explanation is not.
+- **Data:** a small real sample, or labelled illustrative in the README. Never a data point the
+  product doesn't hold.
 - **Standalone.** One HTML file that opens from disk.
 
-### B4. README next to the mock
+### B5. README next to the mock
 
-What the mock shows (screens and states), which design-system folder it was built from (path and
-date), what is real versus illustrative, what is inferred, and the deviations from the workspace
-standard. Then open the mock in the Browser pane, compare against the shell's screenshot, and share
-a screenshot with the user.
+What the mock shows (screens, states, how to reach them), which design-system folder and family it
+was built from, what is real versus illustrative, what is inferred, the deviations from the
+workspace standard, and an **implementation map**: each part of the mock against the real product
+component it corresponds to (source page, capture, real class names), so an implementing agent can
+reach for the product's own component instead of inventing one.
+
+### B6. Check it and share
+
+Open it in the Browser pane over http (`python3 -m http.server`), step through every screen and
+state, in light and dark if the mock has both, and compare against the shell's screenshot. Share a
+screenshot with the user and ask for a verdict before calling it done.
 
 ## Anti-patterns
 
-- **Re-styling a component from scratch** when its capture exists. The capture is the answer.
+- **Assembling a screen from literal fragments** of whatever was captured, especially the
+  product's oldest screens or several generations at once. Design the screen; swap in parts.
+- **Redrawing the shell, logo or icons** when captures of them exist. Those are always swapped in.
 - **Treating an empty list as a bug.** The write block or an empty non-prod environment explains
   it. Say which, and move on.
 - **Clicking harder when a click is refused.** A refusal means the button commits something.
