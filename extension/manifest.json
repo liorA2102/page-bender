@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Page Bender",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "Capture a live page once into a standalone HTML mock, then prototype over it with Claude.",
   "action": {
     "default_title": "Page Bender — click to activate on this page",
@@ -21,7 +21,7 @@
   "background": {
     "service_worker": "background.js"
   },
-  "permissions": ["activeTab", "scripting", "tabs", "alarms", "offscreen", "declarativeNetRequest"],
+  "permissions": ["activeTab", "scripting", "tabs", "alarms", "offscreen", "declarativeNetRequest", "debugger", "tabGroups"],
   "host_permissions": ["<all_urls>"],
   "externally_connectable": {
     "matches": ["http://127.0.0.1:8790/*"]

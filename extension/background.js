@@ -66,7 +66,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // of the external one — content.js runs on the LIVE page being
         // captured, not the mock page, so it never needs externally_connectable.
         if (!sender.tab) throw new Error("no source tab for screenshot request");
-        const dataUrl = await chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: "png" });
+        // A hidden driven tab is never the visible one, so captureVisibleTab
+        // would photograph whatever the user is looking at instead.
+        const dataUrl = (await isHiddenDriven(sender.tab.id))
+          ? await hiddenScreenshot(sender.tab.id)
+          : await chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: "png" });
         sendResponse({ ok: true, dataUrl });
         return;
       }
@@ -144,14 +148,19 @@ async function runAgentCapture(job) {
     // A tab the agent is driving stays inside the non-prod allowlist for
     // captures too, not only for navigation and clicks.
     if (await isDrivenTab(tab.id)) assertDriveHost(tab.url);
-    // captureVisibleTab reads whatever tab is showing in that window, so the
-    // target has to be the active one. Window focus is not needed and is
-    // left alone, so this does not pull Chrome in front of the user.
-    if (!tab.active) {
-      await chrome.tabs.update(tab.id, { active: true });
-      await new Promise((r) => setTimeout(r, 400));
+    if (await isDrivenTab(tab.id)) {
+      // A driven tab is captured where it is, in the background.
+      await ensureHidden(tab.id);
+    } else {
+      // Any other tab: captureVisibleTab reads whatever tab is showing in
+      // that window, so the target has to be the active one. Window focus is
+      // not needed and is left alone, so Chrome is not pulled in front.
+      if (!tab.active) {
+        await chrome.tabs.update(tab.id, { active: true });
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      await assertTabVisible(tab.id);
     }
-    await assertTabVisible(tab.id);
     const [{ result: injected }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => !!window.__pageMockInjected,
@@ -189,8 +198,9 @@ async function runAgentCapture(job) {
 //    cannot save, approve or delete anything. The rule id is the tab id,
 //    which is also how a driven tab is recognised, so this survives the
 //    service worker being restarted.
-// 3. Its own window. Driven tabs open in a separate, unfocused window, never
-//    in the user's own tabs.
+// 3. Out of the way. Driven tabs open in the background of the user's
+//    window, in an expanded "Page Bender" group, and are never made active
+//    (see "hidden driven tabs" below).
 //
 // agent-driver.js adds a softer third layer inside the page (refuses
 // commit-looking buttons, swallows form submits).
@@ -239,6 +249,7 @@ async function blockWrites(tabId) {
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  cancelledTabs.delete(tabId);
   chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [tabId] }).catch(() => {});
 });
 
@@ -264,29 +275,70 @@ function waitForTabLoad(tabId, timeoutMs = 20000) {
 // a dialog opening) before snapshotTab waits for the page to go quiet.
 const settle = (ms = 300) => new Promise((r) => setTimeout(r, ms));
 
+// ---------- hidden driven tabs ----------
+// Driven tabs open in the background of the user's own window and stay
+// there: the debugger tells the page it is visible and focused, so Chrome
+// does not throttle it, and takes its screenshots, so nothing has to be on
+// screen. Chrome shows its "is debugging this browser" bar meanwhile. The
+// tabs sit in one "Page Bender" tab group, kept expanded: a screenshot of a
+// tab inside a collapsed group brings that tab to the front.
+const cdp = (tabId, method, params) => chrome.debugger.sendCommand({ tabId }, method, params || {});
+// Tabs whose debugger the user cancelled from Chrome's bar: stopped on purpose.
+const cancelledTabs = new Set();
+
+chrome.debugger.onDetach.addListener((source, reason) => {
+  if (source.tabId != null && reason === "canceled_by_user") cancelledTabs.add(source.tabId);
+});
+
+async function isAttached(tabId) {
+  const targets = await chrome.debugger.getTargets();
+  return targets.some((t) => t.tabId === tabId && t.attached);
+}
+
+async function isHiddenDriven(tabId) {
+  return (await isDrivenTab(tabId)) && (await isAttached(tabId));
+}
+
+// Attaches (or re-attaches after a service-worker restart) and re-applies
+// the "you are in front" emulation, which a navigation can reset.
+async function ensureHidden(tabId) {
+  if (cancelledTabs.has(tabId)) {
+    throw new Error("background work was stopped from Chrome's debugging bar (Cancel): start again from Page Bender");
+  }
+  if (!(await isAttached(tabId))) await chrome.debugger.attach({ tabId }, "1.3");
+  await cdp(tabId, "Page.enable");
+  await cdp(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true });
+  await cdp(tabId, "Page.setWebLifecycleState", { state: "active" }).catch(() => {});
+}
+
+async function hiddenScreenshot(tabId) {
+  await ensureHidden(tabId);
+  const shot = await cdp(tabId, "Page.captureScreenshot", { format: "png" });
+  return `data:image/png;base64,${shot.data}`;
+}
+
+async function groupDrivenTab(tab) {
+  try {
+    const groups = await chrome.tabGroups.query({ windowId: tab.windowId, title: "Page Bender" });
+    const groupId = await chrome.tabs.group({ tabIds: [tab.id], ...(groups.length ? { groupId: groups[0].id } : { createProperties: { windowId: tab.windowId } }) });
+    await chrome.tabGroups.update(groupId, { title: "Page Bender", color: "pink", collapsed: false });
+  } catch {
+    /* grouping is cosmetic; a failure leaves a plain background tab */
+  }
+}
+
 async function openDriveTab(url) {
   assertDriveHost(url);
-  // Reuse the agent window if one already exists, so repeated opens do not
-  // scatter windows around the user's screen.
-  const existing = await drivenTabIds();
-  let windowId = null;
-  for (const id of existing) {
-    try {
-      windowId = (await chrome.tabs.get(id)).windowId;
-      break;
-    } catch {
-      /* stale rule for a closed tab, handled by onRemoved */
-    }
-  }
-  let tab;
-  if (windowId != null) {
-    tab = await chrome.tabs.create({ windowId, url: "about:blank", active: true });
-  } else {
-    const win = await chrome.windows.create({ url: "about:blank", focused: false, width: 1440, height: 900 });
-    tab = win.tabs[0];
-  }
+  // A background tab in the window the user was last in, never a new window
+  // and never the active tab.
+  const win = await chrome.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
+  const tab = win
+    ? await chrome.tabs.create({ windowId: win.id, url: "about:blank", active: false })
+    : (await chrome.windows.create({ url: "about:blank", focused: false, state: "minimized" })).tabs[0];
   // The write block goes on before the first request to the real host.
   await blockWrites(tab.id);
+  await groupDrivenTab(tab);
+  await ensureHidden(tab.id);
   await chrome.tabs.update(tab.id, { url });
   return tab.id;
 }
@@ -329,18 +381,14 @@ async function callDriver(tabId, method, arg) {
 }
 
 async function snapshotTab(tab) {
-  if (!tab.active) {
-    await chrome.tabs.update(tab.id, { active: true });
-    await settle(400);
-  }
   // Wait for the page itself to go quiet (agent-driver.js settle) before
   // reading it. A fixed delay answered while CMS still showed "Loading…".
-  await assertTabVisible(tab.id);
+  await ensureHidden(tab.id);
   const settled = await callDriver(tab.id, "settle");
   const outline = { ...(await callDriver(tab.id, "snapshot")), settled };
   let screenshot = null;
   try {
-    screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+    screenshot = await hiddenScreenshot(tab.id);
   } catch (err) {
     outline.screenshotError = err.message;
   }
@@ -361,7 +409,7 @@ async function runAgentDrive(job) {
     if (action === "styles") {
       // Answers with the census alone, no snapshot or screenshot: it is read
       // many times per page and the outline would only repeat itself.
-      await assertTabVisible(tab.id);
+      await ensureHidden(tab.id);
       await callDriver(tab.id, "settle");
       return await callDriver(tab.id, "styles");
     }
@@ -387,6 +435,7 @@ async function runAgentDrive(job) {
       step = await callDriver(tab.id, "scroll", job.dy);
       await settle();
     } else if (action === "close") {
+      await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
       await chrome.tabs.remove(tab.id);
       return { ok: true, closed: tab.id };
     } else if (action !== "snapshot") {

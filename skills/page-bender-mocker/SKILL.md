@@ -44,10 +44,10 @@ Limits enforced by Page Bender itself, which this skill never tries to get aroun
   opening and dismissing only: `click` to open, `capture`, then `escape`.
 - **The user must already be logged in** to that host in their own Chrome. A login page in the
   snapshot means stop and ask them to sign in; never type credentials.
-- **The agent's Chrome window must stay visible on screen** while it works (another monitor, or
-  side by side). Chrome throttles a minimized or covered window, so pages stall and screenshots
-  go stale. Page Bender refuses with "the agent's Chrome window is hidden" when that happens:
-  ask the user to uncover it, then retry. Tell the user this before a long run.
+- **The agent works in background tabs** of the user's own window, in an expanded "Page Bender"
+  tab group, and nothing has to stay on screen. Chrome shows "Page Bender started debugging this
+  browser" while it works. If the user presses Cancel on that bar, the run stops with a clear
+  error: say so and stop, do not retry.
 - **The VPN must be on** for internal hosts. "Chrome is showing its error page" usually means it
   dropped.
 
