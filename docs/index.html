@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Page Bender</title>
+<meta name="description" content="Capture any page in seconds, learn its design system once, and build new screens from its real components, often in about a minute." />
 <style>
   @font-face {
     font-family: 'Plus Jakarta Sans';
@@ -410,6 +411,147 @@
   }
   footer.pb-footer a { color: var(--text-mute); text-decoration: none; border-bottom: 1px solid var(--border); }
   footer.pb-footer a:hover { color: var(--status); border-color: var(--status); }
+
+  /* ---------- showcase (an illustration; a fictional product) ---------- */
+  .showcase { margin: 8px 0 0; }
+  @media (min-width: 940px) { .showcase { margin: 8px -80px 0; } }
+  .sc-window { position: relative; border-radius: 16px; overflow: hidden; border: 1px solid var(--border);
+    background: #f3f5f8; box-shadow: 0 40px 100px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.04); }
+  .sc-bar { display: flex; align-items: center; gap: 6px; padding: 10px 14px; background: #1b1620; border-bottom: 1px solid var(--border); }
+  .sc-bar i { width: 9px; height: 9px; border-radius: 50%; background: #3a3043; }
+  .sc-bar span { margin-left: 10px; font: 11px var(--mono); color: var(--text-mute); }
+  .sc-app { display: grid; grid-template-columns: 170px 1fr; min-height: 440px; font-family: -apple-system, system-ui, sans-serif; }
+  .sc-side { background: #263445; padding: 14px 10px; display: flex; flex-direction: column; gap: 2px; }
+  .sc-brand { display: flex; align-items: center; gap: 8px; color: #fff; font-weight: 700; font-size: 13px; padding: 2px 8px 14px; }
+  .sc-brand b { width: 16px; height: 16px; border-radius: 4px; background: #4f8fe6; }
+  .sc-nav { color: rgba(255,255,255,.75); font-size: 12.5px; padding: 8px 10px; border-radius: 6px; }
+  .sc-nav.sc-new { color: #fff; background: rgba(255,255,255,.12); box-shadow: inset 0 0 0 1.5px #ff6ec7; display: flex; justify-content: space-between; align-items: center; }
+  .sc-nav em { font-style: normal; font-size: 9.5px; font-weight: 700; color: #1c0f18; background: #ff6ec7; padding: 1px 6px; border-radius: 999px; }
+  .sc-main { padding: 18px 20px; }
+  .sc-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 14px; }
+  .sc-head small { display: block; font-size: 10.5px; color: #8a96a3; }
+  .sc-head strong { font-size: 19px; color: #263445; font-weight: 600; }
+  .sc-btn { font-size: 11.5px; font-weight: 600; color: #fff; background: #1976d2; padding: 7px 12px; border-radius: 6px; }
+  .sc-table { background: #fff; border-radius: 8px; border: 1px solid #e3e7ec; overflow: hidden; }
+  .sc-row { display: grid; grid-template-columns: 1.6fr 1fr .8fr .7fr; padding: 10px 14px; font-size: 12px; color: #2b3540; border-top: 1px solid #eef1f4; align-items: center; }
+  .sc-row.sc-th { border-top: none; background: #fafbfc; color: #6b7785; font-weight: 600; font-size: 11px; }
+  .sc-pill { font-style: normal; font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+  .sc-run { background: #e3f6ea; color: #2e8a50; }
+  .sc-draft { background: #e7f0fd; color: #1f6fd1; }
+  .sc-done { background: #eceff3; color: #5d6875; }
+  .sc-panel { position: absolute; top: 52px; right: 14px; width: 190px; padding: 12px; border-radius: 12px;
+    background: linear-gradient(180deg, var(--ink-1), var(--ink-2)); border: 1px solid var(--border);
+    box-shadow: 0 16px 40px rgba(0,0,0,.45); }
+  .sc-panel h4 { margin: 0 0 8px; color: var(--text); font-size: 11.5px; }
+  .sc-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+  .sc-chips span { font-size: 10px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); }
+  .sc-chips span.on { border-color: rgba(255,110,199,.45); background: rgba(255,110,199,.1); color: var(--text); }
+  .sc-chips span.hov { border-color: var(--pink); color: var(--text); }
+  .sc-chips b { color: var(--status); font-weight: 600; margin-left: 2px; }
+  .sc-sw { display: flex; gap: 5px; margin-bottom: 8px; }
+  .sc-sw i { flex: 1; height: 18px; border-radius: 4px; border: 1px solid rgba(255,255,255,.12); }
+  .sc-type { font-size: 10.5px; color: var(--text-mute); margin-bottom: 8px; }
+  .sc-type b { color: var(--text); font-size: 15px; margin-right: 4px; }
+  .sc-card { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); width: min(400px, 78%);
+    padding: 14px 16px; border-radius: 16px; background: linear-gradient(180deg, var(--ink-1), var(--ink-2));
+    border: 1px solid var(--border); box-shadow: 0 20px 50px rgba(0,0,0,.55), 0 0 40px rgba(255,45,120,.18); }
+  .sc-card p { margin: 0 0 10px; font-size: 12.5px; color: var(--text); line-height: 1.5; }
+  .sc-card-foot { display: flex; justify-content: space-between; align-items: center; }
+  .sc-ok { font-size: 11px; color: var(--status); }
+  .sc-send { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: #1c0f18; font-weight: 700;
+    background: linear-gradient(135deg, var(--pink-2), var(--pink-3)); }
+  .showcase figcaption { text-align: center; font-size: 11.5px; color: var(--text-mute); margin-top: 12px; }
+  @media (max-width: 640px) {
+    .sc-app { grid-template-columns: 1fr; min-height: 0; }
+    .sc-side { display: none; }
+    .sc-panel { display: none; }
+    .sc-row { grid-template-columns: 1.6fr 1fr; }
+    .sc-row span:nth-child(n+3) { display: none; }
+    .sc-card { position: static; transform: none; width: auto; margin: 0 12px 12px; }
+  }
+
+  /* ---------- how it works ---------- */
+  section.how { padding: 64px 0 8px; }
+  .how-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 720px) { .how-grid { grid-template-columns: 1fr; } }
+  .how-card { background: linear-gradient(180deg, var(--ink-1), var(--ink-2)); border: 1px solid var(--border); border-radius: 16px; padding: 20px; }
+  .how-card .step-num { margin-bottom: 14px; }
+  .how-card h3 { font-size: 15px; font-weight: 700; margin-bottom: 6px; }
+  .how-card p { font-size: 13px; color: var(--text-mute); margin: 0; }
+  .how-card strong, .lens-copy strong { color: var(--text-dim); }
+
+  /* ---------- design language ---------- */
+  section.lens { padding: 56px 0 8px; }
+  .lens-body { display: grid; grid-template-columns: 1fr 300px; gap: 24px; align-items: start; }
+  @media (max-width: 720px) { .lens-body { grid-template-columns: 1fr; } }
+  .lens-copy p { font-size: 14px; margin: 0 0 14px; }
+  .lens-copy em { font-style: normal; color: var(--status); }
+  .lens-panel { padding: 16px; border-radius: 16px; background: linear-gradient(180deg, var(--ink-1), var(--ink-2));
+    border: 1px solid var(--border); box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+  .lens-panel h4 { margin: 12px 0 7px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-mute); }
+  .lens-panel h4:first-child { margin-top: 0; }
+  .lens-sw { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .lens-sw i { height: 24px; border-radius: 6px; border: 1px solid rgba(255,255,255,.12); }
+  .lens-type { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 2px 0; color: var(--text); font-family: -apple-system, system-ui, sans-serif; border-bottom: 1px solid var(--border-soft); }
+  .lens-type small { font: 10px var(--mono); color: var(--text-mute); }
+  .lens-radii { display: flex; gap: 10px; }
+  .lens-radii i { width: 40px; height: 28px; background: #2d2436; border: 1px solid #4a3b58; }
+
+  /* ---------- additions to get started ---------- */
+  .step-optional { border-style: dashed; }
+  .step-optional .step-num { background: transparent; border: 1px solid var(--border); color: var(--status); }
+  .step code, .disclosure code { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+  .disclosure-more { margin-top: 8px !important; }
+
+  /* ---------- beats ---------- */
+  .beats { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 40px; flex-wrap: wrap; }
+  .beat { text-align: center; min-width: 120px; }
+  .beat b { display: block; font-size: 22px; color: var(--text); font-weight: 800; letter-spacing: -.01em; }
+  .beat span { font-size: 12px; color: var(--text-mute); }
+  .beats > i { width: 34px; height: 1px; background: linear-gradient(90deg, transparent, var(--pink), transparent); }
+  @media (max-width: 560px) { .beats > i { display: none; } }
+
+  /* ---------- claims ---------- */
+  section.claim { display: grid; grid-template-columns: 1fr 300px; gap: 32px; align-items: center; padding: 64px 0 8px; }
+  section.claim.claim-flip { grid-template-columns: 300px 1fr; }
+  section.claim.claim-flip .claim-copy { order: 2; }
+  @media (max-width: 720px) {
+    section.claim, section.claim.claim-flip { grid-template-columns: 1fr; }
+    section.claim.claim-flip .claim-copy { order: 0; }
+  }
+  .claim-copy .eyebrow { margin-bottom: 10px; }
+  .claim-copy h2 { font-size: clamp(1.4rem, 3vw, 1.85rem); font-weight: 700; margin-bottom: 14px; }
+  .claim-copy p { font-size: 14.5px; margin: 0 0 12px; }
+  .claim-copy strong { color: var(--text); }
+  .claim-visual { padding: 18px; border-radius: 16px; background: linear-gradient(180deg, var(--ink-1), var(--ink-2));
+    border: 1px solid var(--border); box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+  .cap { display: grid; grid-template-columns: 1fr 24px 1fr; gap: 10px; align-items: center; }
+  .cap-pane { background: #f3f5f8; border-radius: 10px; padding: 10px; }
+  .cap-pane small { font-size: 9.5px; color: #6b7785; display: block; margin-bottom: 6px; }
+  .cap-copy { box-shadow: 0 0 0 2px var(--pink), 0 0 24px rgba(255,61,146,.35); }
+  .cap-lines i { display: block; height: 7px; border-radius: 3px; background: #c9d3de; margin-bottom: 5px; }
+  .cap-lines i:first-child { background: #1976d2; width: 60%; }
+  .cap-lines i.s { width: 45%; }
+  .cap-arrow { color: var(--status); font-weight: 700; text-align: center; }
+  .cap-tags { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .cap-tags span, .ds-head span { font-size: 10.5px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); }
+  .cap-tags span:last-child { border-color: rgba(255,110,199,.45); color: var(--text); background: rgba(255,110,199,.1); }
+  .ds-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .ds-head b { color: var(--text); font-size: 13px; }
+  .ds-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border-soft); font-size: 12px; }
+  .ds-row span:first-child { color: var(--text-mute); }
+  .ds-row b { color: var(--text-dim); font-weight: 600; font-size: 11.5px; text-align: right; }
+  .ds-sw { display: flex; gap: 4px; }
+  .ds-sw i { width: 18px; height: 14px; border-radius: 3px; border: 1px solid rgba(255,255,255,.12); }
+  .proof-title { font-size: 12px; color: var(--text); font-weight: 700; margin-bottom: 12px; }
+  .proof-row { margin-bottom: 12px; }
+  .proof-row span { display: block; font-size: 11.5px; color: var(--text-mute); margin-bottom: 4px; }
+  .proof-bar { height: 8px; border-radius: 999px; background: rgba(255,255,255,.05); overflow: hidden; }
+  .proof-bar i { display: block; height: 100%; border-radius: 999px; background: #4a3b58; }
+  .proof-row.win .proof-bar i { background: linear-gradient(90deg, var(--pink-2), var(--pink-3)); }
+  .proof-row b { display: block; font-size: 13px; color: var(--text-dim); margin-top: 4px; }
+  .proof-row.win b { color: var(--text); }
+  .proof small { display: block; font-size: 10.5px; color: var(--text-mute); line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -426,10 +568,10 @@
 
 <main class="wrap">
   <section class="hero">
-    <h1 class="headline"><em>Bend</em> any webpage into your ultimate prototype.</h1>
+    <h1 class="headline"><em>Bend</em> any page into your next feature.</h1>
     <p class="subhead">
-      Capture a live screen exactly as it renders, then reshape it with Claude&nbsp;&mdash;
-      new layouts, new copy, new components &mdash; without touching the real app or waiting on a sprint.
+      A pixel-faithful copy of any page in seconds. A design system learned once and kept.
+      New screens built from the product's real components, often in about a minute.
     </p>
     <div class="cta-row">
       <a class="btn-primary" href="https://github.com/liorA2102/page-bender/archive/refs/heads/main.zip" download>
@@ -437,38 +579,150 @@
       </a>
       <a class="btn-ghost" href="#get-started">How To Setup</a>
     </div>
-    <div class="cta-caption">macOS &middot; Chrome &middot; ~5 minutes to set up</div>
+    <div class="cta-caption">macOS &middot; Chrome &middot; ~5 minutes to set up &middot; free &middot; source on GitHub</div>
+    <div class="beats" aria-label="From page to feature">
+      <div class="beat"><b>~5 s</b><span>Capture the page</span></div>
+      <i></i>
+      <div class="beat"><b>Once</b><span>Learn its design system</span></div>
+      <i></i>
+      <div class="beat"><b>~1 min</b><span>A new screen, once learned</span></div>
+    </div>
+  </section>
+
+  <figure class="showcase" aria-label="Page Bender adding an Experiments screen to a product">
+    <div class="sc-window">
+      <div class="sc-bar"><i></i><i></i><i></i><span>localhost &middot; your bent copy</span></div>
+      <div class="sc-app">
+        <aside class="sc-side">
+          <div class="sc-brand"><b></b>Acme Console</div>
+          <div class="sc-nav">Overview</div>
+          <div class="sc-nav">Campaigns</div>
+          <div class="sc-nav">Reports</div>
+          <div class="sc-nav sc-new">Experiments<em>new</em></div>
+          <div class="sc-nav">Settings</div>
+        </aside>
+        <div class="sc-main">
+          <div class="sc-head"><div><small>Home &rsaquo; Experiments</small><strong>Experiments</strong></div><span class="sc-btn">New experiment</span></div>
+          <div class="sc-table">
+            <div class="sc-row sc-th"><span>Name</span><span>Status</span><span>Split</span><span>Start</span></div>
+            <div class="sc-row"><span>Onboarding flow B</span><span><i class="sc-pill sc-run">Running</i></span><span>50 / 50</span><span>Sep 12</span></div>
+            <div class="sc-row"><span>Paywall copy test</span><span><i class="sc-pill sc-draft">Draft</i></span><span>70 / 30</span><span>&mdash;</span></div>
+            <div class="sc-row"><span>Icon variant</span><span><i class="sc-pill sc-done">Completed</i></span><span>50 / 50</span><span>Aug 2</span></div>
+            <div class="sc-row"><span>Checkout CTA</span><span><i class="sc-pill sc-run">Running</i></span><span>33 / 33 / 34</span><span>Sep 28</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="sc-panel">
+        <h4>Design language</h4>
+        <div class="sc-chips"><span class="on">Material UI</span><span>styled-components</span></div>
+        <div class="sc-sw"><i style="background:#1976d2"></i><i style="background:#202020"></i><i style="background:#4caf50"></i><i style="background:#f5f7fa"></i></div>
+        <div class="sc-type"><b>Aa</b> 14 &middot; 22 &middot; 28</div>
+        <div class="sc-chips"><span>Buttons 32</span><span>Tables 1</span><span>Checkboxes 14</span></div>
+      </div>
+      <div class="sc-card">
+        <p>Add an Experiments screen reachable from the sidebar: a table of tests with status pills and a New experiment button.</p>
+        <div class="sc-card-foot"><span class="sc-ok">Done &middot; 58 s</span><span class="sc-send">&rarr;</span></div>
+      </div>
+    </div>
+    <figcaption>Illustration. A new screen built inside the product, with its own nav item and the product's real parts.</figcaption>
+  </figure>
+
+  <section class="claim">
+    <div class="claim-copy">
+      <div class="eyebrow">01 &middot; Capture</div>
+      <h2>Any page, captured in seconds.</h2>
+      <p>Click <strong>Let's Page Bend</strong> and a pixel-faithful, editable copy of the page opens on your machine, in about five seconds. Not a screenshot and not a redraw: the page's real markup and real stylesheets, with its fonts embedded, as one standalone file.</p>
+      <p>It works on any site, behind any login you already have. Grab the whole page or just one section.</p>
+    </div>
+    <div class="claim-visual cap" aria-hidden="true">
+      <div class="cap-pane"><small>Live page</small><div class="cap-lines"><i></i><i></i><i></i><i class="s"></i></div></div>
+      <div class="cap-arrow">&rarr;</div>
+      <div class="cap-pane cap-copy"><small>Your copy</small><div class="cap-lines"><i></i><i></i><i></i><i class="s"></i></div></div>
+      <div class="cap-tags"><span>Real markup</span><span>Real CSS</span><span>Fonts embedded</span><span>~5 s</span></div>
+    </div>
+  </section>
+
+  <section class="claim claim-flip">
+    <div class="claim-copy">
+      <div class="eyebrow">02 &middot; Learn</div>
+      <h2>It learns the design system once.</h2>
+      <p>From the page you bent, instantly: its component library, colours, type, radii and the components it has. For products you've set up, Page Bender also crawls a few pages in the background (about 50 seconds) or the whole product.</p>
+      <p>What it learns is kept and reused for every mock: measured tokens, every component with exactly the CSS it needs, the page's layout outline, and a catalog you can browse. The agent starts with all of it in hand, instead of reading the page from scratch each time.</p>
+    </div>
+    <div class="claim-visual ds" aria-hidden="true">
+      <div class="ds-head"><b>Design system</b><span>kept 30 days &middot; reused</span></div>
+      <div class="ds-row"><span>Tokens</span><span class="ds-sw"><i style="background:#1976d2"></i><i style="background:#263445"></i><i style="background:#4caf50"></i><i style="background:#f5f7fa"></i></span></div>
+      <div class="ds-row"><span>Components</span><b>21, each with its CSS</b></div>
+      <div class="ds-row"><span>Page outline</span><b>nav &middot; header &middot; main</b></div>
+      <div class="ds-row"><span>Type scale</span><b>13 &middot; 14 &middot; 18 &middot; 22</b></div>
+      <div class="ds-row"><span>Catalog</span><b>browsable</b></div>
+    </div>
+  </section>
+
+  <section class="claim">
+    <div class="claim-copy">
+      <div class="eyebrow">03 &middot; Build</div>
+      <h2>So a new screen takes about a minute.</h2>
+      <p>Describe the feature in plain language. It's built from the product's real components, so it looks shipped, not sketched. Whole new screens land inside the product's own navigation, wired so the prototype clicks through.</p>
+      <p>Then keep shaping it by chat, or select, restyle and delete by hand.</p>
+    </div>
+    <div class="claim-visual proof">
+      <div class="proof-title">Same feature request, same product</div>
+      <div class="proof-row"><span>AI agent working from the page alone</span><div class="proof-bar"><i style="width:100%"></i></div><b>~12 min</b></div>
+      <div class="proof-row win"><span>With the design system learned</span><div class="proof-bar"><i style="width:9%"></i></div><b>~1 min</b></div>
+      <small>Measured on a real product: "Add an Experiments screen with a table and status pills." Three runs, 49 to 67 seconds.</small>
+    </div>
+  </section>
+
+  <section class="lens">
+    <div class="section-head">
+      <div class="eyebrow">Design language</div>
+      <h2>See what any page is made of</h2>
+    </div>
+    <div class="lens-body">
+      <div class="lens-copy">
+        <p>Every bend opens a <strong>Design</strong> panel: the component library the page is built on, its colours by use, its type scale, borders, radii and shadows, and the components it already has.</p>
+        <p>Hover any entry and every match lights up on the page. Hover a blue and you see every link that uses it; hover <em>Checkboxes</em> and all fourteen glow.</p>
+        <p>It's what the agent builds with: it copies the page's own parts, and builds what's missing the way that library would, in those exact values.</p>
+      </div>
+      <div class="lens-panel" aria-hidden="true">
+        <h4>Built with</h4>
+        <div class="sc-chips"><span class="on">Material UI</span><span>styled-components (styling)</span></div>
+        <h4>Components on this page</h4>
+        <div class="sc-chips"><span>Buttons <b>32</b></span><span>Links <b>14</b></span><span class="hov">Checkboxes <b>14</b></span><span>Tables <b>1</b></span><span>Pagination <b>1</b></span><span>Icons <b>41</b></span></div>
+        <h4>Text colours</h4>
+        <div class="lens-sw"><i style="background:#202020"></i><i style="background:#1976d2"></i><i style="background:#565a5c"></i><i style="background:#aebac8"></i><i style="background:#50d888"></i></div>
+        <h4>Type</h4>
+        <div class="lens-type"><span style="font-size:22px;font-weight:700">The quick brown fox</span><small>22 &middot; 700</small></div>
+        <div class="lens-type"><span style="font-size:14px;font-weight:500">The quick brown fox</span><small>14 &middot; 500</small></div>
+        <div class="lens-type"><span style="font-size:13px">The quick brown fox</span><small>13 &middot; 400</small></div>
+        <h4>Corner radii</h4>
+        <div class="lens-radii"><i style="border-radius:3px"></i><i style="border-radius:6px"></i><i style="border-radius:8px"></i><i style="border-radius:999px"></i></div>
+      </div>
+    </div>
   </section>
 
   <section class="features">
     <div class="section-head">
-      <div class="eyebrow">What you get</div>
-      <h2>More than a screenshot tool</h2>
+      <div class="eyebrow">Also</div>
+      <h2>Built for real work</h2>
     </div>
     <div class="feature-grid">
       <div class="feature-card">
-        <h3><span class="feature-dot"></span>Real DOM, real CSS</h3>
-        <p>Copies the actual markup and stylesheets &mdash; not a screenshot, not a per-element style bake that quietly stops adding up.</p>
+        <h3><span class="feature-dot"></span>Works on any page</h3>
+        <p>Your product or someone else's. Material UI, Ant Design, Bootstrap, Tailwind, Salesforce, Carbon and more are recognised; custom CSS works too.</p>
       </div>
       <div class="feature-card">
-        <h3><span class="feature-dot"></span>Capture just one section</h3>
-        <p>Hover, click, done. Grab a single component instead of freezing the whole page.</p>
+        <h3><span class="feature-dot"></span>Real components, not lookalikes</h3>
+        <p>Parts come from anywhere in the product, each carrying exactly the CSS it needs, so a table from one page renders right on another.</p>
       </div>
       <div class="feature-card">
-        <h3><span class="feature-dot"></span>Edit in plain language</h3>
-        <p>Describe the change. Claude edits the real markup in place, with full context of what's already there.</p>
-      </div>
-      <div class="feature-card">
-        <h3><span class="feature-dot"></span>Undo, redo, quick-edit</h3>
-        <p>Five-slot undo/redo plus a color and radius panel for fast tweaks without writing a prompt.</p>
+        <h3><span class="feature-dot"></span>Fixes its own gaps</h3>
+        <p>If a font or stylesheet couldn't be copied, it notices and repairs the copy against a screenshot, by itself, while you start typing.</p>
       </div>
       <div class="feature-card">
         <h3><span class="feature-dot"></span>Clean handoff</h3>
-        <p>Export an accurate diff for engineers, or download the finished HTML on its own.</p>
-      </div>
-      <div class="feature-card">
-        <h3><span class="feature-dot"></span>Always running</h3>
-        <p>A background server, not a script to remember. Click the extension and it's ready.</p>
+        <p>Export a diff engineers can follow, or the finished HTML on its own, with its fonts and styles inside.</p>
       </div>
     </div>
   </section>
@@ -499,7 +753,7 @@
             <span>./setup.command</span>
             <button type="button" data-copy="./setup.command">Copy</button>
           </div>
-          <p class="hint">macOS will likely say it can't verify the developer &mdash; that's expected for a script outside the App Store. Right-click (or Control-click) the file and choose <strong>Open</strong> instead of double-clicking; it only asks once.</p>
+          <p class="hint">macOS will likely say it can't verify the developer. That's expected for a script outside the App Store: right-click (or Control-click) the file and choose <strong>Open</strong> instead of double-clicking. It only asks once.</p>
           <div class="status-row" id="server-status">
             <span class="status-dot status-pending"></span>
             <span class="status-text">Waiting for the server to start&hellip;</span>
@@ -513,13 +767,21 @@
           <p>In the Chrome tab that just opened: turn on Developer Mode, click "Load unpacked," and pick the folder that's already highlighted in Finder.</p>
         </div>
       </div>
+      <div class="step step-optional">
+        <div class="step-num">+</div>
+        <div>
+          <h3>Optional: learn whole products</h3>
+          <p>Bending works on any page with no setup. To have Page Bender learn a product's full design system, point it at running non-prod copies of that product: connect your team's environment service to Claude Code, then copy <code>server/environments.example.json</code> to <code>environments.local.json</code> and fill it in.</p>
+        </div>
+      </div>
     </div>
 
     <div class="disclosure">
       <div class="dot">i</div>
       <div>
         <h3>Before you install</h3>
-        <p>The local server runs with full tool access on your machine &mdash; the editing agent can run shell commands while it works, with no sandbox. That's a deliberate trade-off for how capable the editing feels, not an oversight. Only install this on a machine you're comfortable with that.</p>
+        <p>The local server runs with full tool access on your machine: the editing agent can run shell commands while it works, with no sandbox. That's a deliberate trade-off for how capable the editing feels, not an oversight. Only install this on a machine you're comfortable with that.</p>
+        <p class="disclosure-more">Bending a page only reads it. When Page Bender explores a product to learn it, it uses non-prod copies only, in background tabs, with every write blocked. Captures stay on your machine.</p>
       </div>
     </div>
   </section>
