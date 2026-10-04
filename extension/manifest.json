@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Page Bender",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Capture a live page once into a standalone HTML mock, then prototype over it with Claude.",
   "action": {
     "default_title": "Page Bender — click to activate on this page",

@@ -60,20 +60,7 @@ function partOf(html, rules) {
     if (!el) return null;
     const depth = scopingDepth(ancestors, html.slice(el.start, el.closeEnd), rules);
     const near = depth ? ancestors.slice(-depth) : []; // slice(-0) would keep them all
-    // The part's root keeps its pinned fonts. A wide pinned width was the
-    // live page's column (a page header pinned at 1164px), so it becomes
-    // 100%; a narrow one stays only on a form control (a 138px date input).
-    // Pinned heights go. Links never lead back to the copy.
-    let own = trimRows(html.slice(el.start, el.closeEnd));
-    // A form control's box is fixed; a button's, link's or pill's follows its
-    // text, so its pinned width (72px for "Add") would clip new text.
-    const control = /^<(input|select|textarea)\b|<input\b|role="(combobox|listbox|textbox)"/i.test(own);
-    own = own.replace(/^(<[^>]*\sstyle=")([^"]*)/, (m, head, style) => head + style.split(";").map((d) => {
-      const w = d.match(/^\s*width\s*:\s*([\d.]+)px/i);
-      if (w) return Number(w[1]) >= COLUMN_WIDTH ? " width: 100%" : control ? d : null;
-      return /^\s*(height|min-height|max-height|max-width|min-width)\s*:/i.test(d) ? null : d;
-    }).filter((d) => d !== null).join(";"));
-    own = own.replace(/\shref="https?:\/\/[^"]*"/g, ' href="#"');
+    const own = cleanPart(html.slice(el.start, el.closeEnd));
     const markup = near.map((a) => a.open.replace(/\shref="https?:\/\/[^"]*"/g, ' href="#"')).join("") + own + near.slice().reverse().map((a) => `</${a.tag}>`).join("");
     return { markup, chain: ancestors.map((a) => classesOf(a.open)[0] || a.tag) };
   }
@@ -100,6 +87,49 @@ function scopingDepth(ancestors, inner, rules) {
     if (cls.length && all.some((set) => cls.some((c) => set.has(c)) && [...set].some((c) => own.has(c)))) depth = k;
   }
   return depth;
+}
+
+// Ready-to-copy markup of one element: table rows trimmed, its pinned size
+// adjusted (a form control's box is fixed; a button's, link's or pill's
+// follows its text, so a 72px pin for "Add" would clip new text; a pin as
+// wide as a page column becomes 100%), and links never leading back to the
+// page it came from.
+export function cleanPart(markup) {
+  let own = trimGridRows(trimRows(markup));
+  const control = /^<(input|select|textarea)\b|<input\b|role="(combobox|listbox|textbox)"/i.test(own);
+  own = own.replace(/^(<[^>]*\sstyle=")([^"]*)/, (m, head, style) => head + style.split(";").map((d) => {
+    const w = d.match(/^\s*width\s*:\s*([\d.]+)px/i);
+    if (w) return Number(w[1]) >= COLUMN_WIDTH ? " width: 100%" : control ? d : null;
+    return /^\s*(height|min-height|max-height|max-width|min-width)\s*:/i.test(d) ? null : d;
+  }).filter((d) => d !== null).join(";"));
+  return own.replace(/\shref="https?:\/\/[^"]*"/g, ' href="#"');
+}
+
+// The same for grids built from divs (MUI's DataGrid: role="rowgroup"
+// holding role="row" elements): keep two rows of each row group.
+function trimGridRows(markup) {
+  let out = markup;
+  let from = 0;
+  for (;;) {
+    const g = out.slice(from).search(/<[a-zA-Z][\w-]*(?=[\s>])[^>]*role="rowgroup"[^>]*>/);
+    if (g < 0) return out;
+    const group = elementAt(out, from + g);
+    if (!group) return out;
+    const inner = out.slice(group.openEnd, group.closeStart);
+    const rows = [];
+    const re = /<[a-zA-Z][\w-]*(?=[\s>])[^>]*role="row"[^>]*>/g;
+    let m;
+    while ((m = re.exec(inner))) {
+      const row = elementAt(out, group.openEnd + m.index);
+      if (!row) break;
+      rows.push(row);
+      re.lastIndex = row.closeEnd - group.openEnd;
+    }
+    if (rows.length > 2) {
+      out = out.slice(0, rows[1].closeEnd) + "<!-- more rows like these -->" + out.slice(rows[rows.length - 1].closeEnd);
+    }
+    from = group.start + 1;
+  }
 }
 
 // A table's markup is mostly repeated rows: keep the header and two rows,

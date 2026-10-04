@@ -605,6 +605,7 @@
     info: svgIcon('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>', 13),
     edit: svgIcon('<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>', 12),
     sliders: svgIcon('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>', 15),
+    palette: svgIcon('<circle cx="13.5" cy="6.5" r="1.5"/><circle cx="17.5" cy="10.5" r="1.5"/><circle cx="8.5" cy="7.5" r="1.5"/><circle cx="6.5" cy="12.5" r="1.5"/><path d="M12 2a10 10 0 0 0 0 20c.9 0 1.6-.7 1.6-1.6 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a6 6 0 0 0 6-6c0-4.9-4.5-8.6-10-8.6z"/>'),
     screens: svgIcon('<rect x="3" y="4" width="13" height="10" rx="1.5"/><path d="M8 18h11a2 2 0 0 0 2-2V8"/>'),
     plus: svgIcon('<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>', 11),
     trash: svgIcon('<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>', 13),
@@ -1014,7 +1015,7 @@
         50% { border-radius: 36px 44px 38px 46px; transform: scale(0.99); }
         75% { border-radius: 44px 38px 46px 36px; transform: scale(1.008); }
       }
-      .pm-titlebar { display: flex; align-items: center; gap: 6px; margin: 0 0 14px; }
+      .pm-titlebar { display: flex; align-items: center; gap: 6px; margin: 0 0 14px; padding-right: 120px; }
       .pm-greet { font-size: 18px; margin: 0; }
       .pm-info-wrap { position: relative; display: inline-flex; }
       .pm-info-icon { width: 17px; height: 17px; border-radius: 50%; border: 1px solid var(--pm-border);
@@ -1030,6 +1031,12 @@
       .pm-min { position: absolute; top: 14px; right: 16px; width: 26px; height: 26px; border-radius: 8px;
         border: 1px solid var(--pm-border); background: rgba(255,255,255,.03); color: var(--pm-text-dim);
         cursor: pointer; display: flex; align-items: center; justify-content: center; }
+      .pm-export-top { position: absolute; top: 14px; right: 50px; height: 26px; padding: 0 10px; border-radius: 8px;
+        display: flex; align-items: center; gap: 5px; cursor: pointer; font: 500 11px 'Plus Jakarta Sans', sans-serif;
+        border: 1px solid var(--pm-border); background: rgba(255,255,255,.02); color: var(--pm-text-dim); }
+      .pm-export-top:hover { background: rgba(255,61,146,.14); color: var(--pm-status); border-color: rgba(255,61,146,.3); }
+      /* Stop takes this spot while a run is going. */
+      .pm-card.pm-thinking .pm-export-top { display: none; }
       .pm-min:hover { background: rgba(255,61,146,.14); color: var(--pm-status); border-color: rgba(255,61,146,.3); }
       /* Icon-only square, same footprint as .pm-min, sitting just to its
          left — hidden by default (inline style="display:none"), shown
@@ -1087,6 +1094,7 @@
       .pm-status { font-size: 12px; color: var(--pm-text-mute); min-height: 15px; margin-bottom: 10px; line-height: 1.4; transition: color .15s ease; }
       .pm-card.pm-thinking .pm-status { color: var(--pm-status); }
       .pm-card.pm-thinking .pm-input { pointer-events: none; animation: pm-input-pulse 1.6s ease-in-out infinite; }
+      .pm-card.pm-thinking.pm-typeable .pm-input { pointer-events: auto; animation: none; }
       @keyframes pm-input-pulse { 0%, 100% { opacity: .35; } 50% { opacity: .65; } }
       /* Hidden outright, not just dimmed — every tool in this row is
          already pointer-events:none while thinking (nothing to click), and
@@ -1131,6 +1139,45 @@
         font-family: inherit; padding: 8px 10px; border-radius: 8px; font-size: 12.5px; color: #d3c2d6; }
       .pm-export-opt:hover { background: rgba(255,61,146,.12); color: #f4eef7; }
 
+      .pm-dl { display: none; position: fixed; z-index: ${Z}; top: 16px; right: 16px; width: min(360px, calc(100vw - 32px));
+        max-height: calc(100vh - 32px); overflow-y: auto; box-sizing: border-box;
+        font-family: 'Plus Jakarta Sans', -apple-system, system-ui, sans-serif; color: #d3c2d6;
+        background: linear-gradient(180deg, #18121d, #100c14); border: 1px solid #2d2436; border-radius: 18px;
+        padding: 18px 18px 14px; box-shadow: 0 30px 80px rgba(0,0,0,.6); }
+      .pm-dl.pm-open { display: block; animation: pm-dl-in .35s ease-out; }
+      @keyframes pm-dl-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+      .pm-dl h3 { margin: 0 0 2px; font-size: 15px; color: #f4eef7; font-weight: 600; }
+      .pm-dl .pm-dl-sub { font-size: 11.5px; color: #8a7d93; margin: 0 0 12px; }
+      .pm-dl .pm-dl-close { all: unset; position: absolute; top: 14px; right: 14px; cursor: pointer; color: #8a7d93; font-size: 16px; line-height: 1; padding: 4px; }
+      .pm-dl .pm-dl-close:hover { color: #ff9fd1; }
+      .pm-dl h4 { margin: 14px 0 6px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: #8a7d93; font-weight: 600; }
+      .pm-dl .pm-dl-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      .pm-dl .pm-dl-chip { font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(255,110,199,.35); color: #f4eef7; background: rgba(255,110,199,.08); }
+      .pm-dl .pm-dl-chip.pm-dim { border-color: #2d2436; background: transparent; color: #d3c2d6; }
+      .pm-dl .pm-dl-swatches { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+      .pm-dl .pm-dl-sw { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+      .pm-dl .pm-dl-sw span:first-child { height: 30px; border-radius: 8px; border: 1px solid rgba(255,255,255,.12); }
+      .pm-dl .pm-dl-sw span:last-child { font: 10px ui-monospace, Menlo, monospace; color: #8a7d93; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pm-dl .pm-dl-type { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 3px 0; border-bottom: 1px solid rgba(45,36,54,.6); }
+      .pm-dl .pm-dl-type span:first-child { color: #f4eef7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .pm-dl .pm-dl-type span:last-child { font: 10.5px ui-monospace, Menlo, monospace; color: #8a7d93; white-space: nowrap; }
+      .pm-dl .pm-dl-shapes { display: flex; flex-wrap: wrap; gap: 10px; }
+      .pm-dl .pm-dl-shape { width: 46px; height: 34px; background: #2d2436; border: 1px solid #4a3b58; display: flex; align-items: flex-end; justify-content: center; }
+      .pm-dl .pm-dl-shape span { font: 9.5px ui-monospace, Menlo, monospace; color: #d3c2d6; margin-bottom: -16px; }
+      .pm-dl .pm-dl-shapes.pm-shadows .pm-dl-shape { background: #f4eef7; border: none; }
+      .pm-dl [data-hl] { cursor: pointer; }
+      .pm-dl .pm-dl-sw[data-hl]:hover span:first-child, .pm-dl .pm-dl-shape[data-hl]:hover { outline: 2px solid #ff3d92; outline-offset: 2px; }
+      .pm-dl .pm-dl-type[data-hl]:hover, .pm-dl .pm-dl-line[data-hl]:hover { background: rgba(255,61,146,.10); }
+      .pm-dl .pm-dl-chip[data-hl]:hover { border-color: #ff3d92; color: #f4eef7; }
+      .pm-dl .pm-dl-chip b { color: #ff9fd1; font-weight: 600; margin-left: 4px; }
+      .pm-dl .pm-dl-line { display: flex; align-items: center; gap: 10px; padding: 3px 4px; border-radius: 6px; font: 10.5px ui-monospace, Menlo, monospace; color: #8a7d93; }
+      .pm-dl .pm-dl-line i { flex: none; width: 34px; height: 14px; border-radius: 3px; background: #f4eef7; }
+      .pm-dl .pm-dl-hint { font-size: 11px; color: #8a7d93; margin: -6px 0 4px; }
+      .pm-hl-layer { position: fixed; inset: 0; pointer-events: none; z-index: ${Z - 1}; }
+      .pm-hl-box { position: fixed; border: 2px solid #ff3d92; background: rgba(255,61,146,.10); border-radius: 3px;
+        box-shadow: 0 0 0 1px rgba(255,255,255,.6); transition: opacity .15s ease; }
+      .pm-hl-box.pm-first { background: rgba(255,61,146,.22); }
+      .pm-dl .pm-dl-note { font-size: 11.5px; color: #8a7d93; margin-top: 12px; line-height: 1.45; }
       .pm-bubble { position: fixed; left: 50%; bottom: 36px; transform: translateX(-50%);
         width: 46px; height: 46px; border-radius: 50%; border: none; cursor: pointer; display: none;
         align-items: center; justify-content: center; z-index: ${Z};
@@ -1190,6 +1237,7 @@
     </div>
     <div class="pm-card">
       <div class="pm-halo2"></div>
+      <button class="pm-export-top" id="pm-export" title="Export the mock: a diff for handoff, or the finished HTML">${ICONS.exportIco} Export</button>
       <button class="pm-min" id="pm-minimize" title="Minimize — keep the mock visible">${ICONS.minimize}</button>
       <button class="pm-stop-top" id="pm-stop" style="display:none;" title="Stop the in-progress AI pass (Esc) — whatever it already changed stays">${ICONS.stopSquare}</button>
       <div class="pm-titlebar">
@@ -1226,7 +1274,7 @@
           <button class="pm-tool" id="pm-screenshot" title="Drag to highlight any area as a reference">${ICONS.areaShot} Screenshot</button>
           <button class="pm-tool" id="pm-undo" title="Undo">${ICONS.undo}</button>
           <button class="pm-tool" id="pm-redo" title="Redo">${ICONS.redo}</button>
-          <button class="pm-tool" id="pm-export">${ICONS.exportIco} Export</button>
+          <button class="pm-tool" id="pm-design" title="This page's design language: what it's built with and what it measures">${ICONS.palette} Design</button>
           <button class="pm-tool" id="pm-screens" style="display:none;" title="Switch between this mock's screens">${ICONS.screens} Screens</button>
         </div>
         <div class="pm-actions">
@@ -1259,6 +1307,12 @@
   const screensMenu = document.createElement("div");
   screensMenu.className = "pm-export-menu";
   document.documentElement.appendChild(screensMenu);
+
+  const designPanel = document.createElement("div");
+  designPanel.className = "pm-dl";
+  designPanel.setAttribute("role", "dialog");
+  designPanel.setAttribute("aria-label", "Design language");
+  document.documentElement.appendChild(designPanel);
 
   const cardEl = toolbar.querySelector(".pm-card");
   const pillEl = toolbar.querySelector(".pm-pill");
@@ -1563,6 +1617,7 @@
     setStatus(outcome);
     rememberLastRun(outcome);
     refreshScreens();
+
   }
   sendBtn.addEventListener("click", sendPrompt);
 
@@ -1618,7 +1673,15 @@
   function renderDs(d) {
     dsEl.className = "pm-ds";
     genBtn.style.display = "none";
-    if (!d || !d.ok || !d.product) { dsEl.innerHTML = ""; return; }
+    if (!d || !d.ok) { dsEl.innerHTML = ""; return; }
+    // No design system: the agent builds from this page's own design.
+    const pageNote = d.page ? `Building from this page's own design${d.page.libraries.length ? ` (${escapeText(d.page.libraries.join(", "))})` : ""}.` : "";
+    if (!d.product) {
+      if (!pageNote) { dsEl.innerHTML = ""; return; }
+      dsEl.innerHTML = `<span class="pm-ds-dot"></span><span class="pm-ds-text">${pageNote}</span>`;
+      dsEl.classList.add("pm-show");
+      return;
+    }
     const label = escapeText(d.label || d.product);
     let text = "";
     if (d.generating && d.generating.status === "running") {
@@ -1633,10 +1696,9 @@
       text = `<a href="${escapeText(d.quick.url || "#")}" target="_blank" rel="noopener">${label} quick design system · ${d.quick.pages} pages · ${escapeText(formatDay(d.quick.date))}</a>`;
     } else if (d.copy === "sign-in") {
       dsEl.classList.add("pm-warn");
-      text = `Sign in to the ${label} copy once so Page Bender can learn the product. <a href="${escapeText(d.signInUrl)}" target="_blank" rel="noopener">Sign in</a>`;
+      text = `${pageNote} To learn all of ${label}, sign in to its copy once. <a href="${escapeText(d.signInUrl)}" target="_blank" rel="noopener">Sign in</a>`;
     } else if (d.copy === "none") {
-      dsEl.classList.add("pm-warn");
-      text = `No running ${label} copy to learn from right now. Edits still work.`;
+      text = `${pageNote} No running ${label} copy to learn more from right now.`;
     } else if (d.learnError) {
       dsEl.classList.add("pm-warn");
       text = `Couldn't learn ${label}: ${escapeText(d.learnError)}`;
@@ -1753,17 +1815,199 @@
     if (screensMenu.classList.contains("pm-open") && !screensMenu.contains(e.target) && !screensBtn.contains(e.target)) screensMenu.classList.remove("pm-open");
   });
   refreshScreens();
+
+  // ---------- design language ----------
+  // What this page is built with and what it measures, read from the
+  // capture alone (works on any page). Opens by itself once per capture.
+  const designBtn = toolbar.querySelector("#pm-design");
+  let designData = null;
+
+  // ---- what the page is made of, read from the live copy ----
+  // Component kinds by the markup libraries and plain HTML leave behind.
+  // Counted on the editor's own DOM (the same page, real CSS), so hovering
+  // an entry can point at every instance.
+  const PART_KINDS = [
+    ["Buttons", "button, [role=button], input[type=button], input[type=submit], .MuiButton-root, .ant-btn, .btn"],
+    ["Links", "a[href]"],
+    ["Text fields", "input[type=text], input[type=search], input[type=email], input[type=number], input[type=password], input:not([type]), textarea, .MuiTextField-root, .ant-input-affix-wrapper"],
+    ["Dropdowns", "select, [role=combobox], [aria-haspopup=listbox], .MuiSelect-root, .ant-select"],
+    ["Checkboxes", "input[type=checkbox], [role=checkbox], .MuiCheckbox-root, .ant-checkbox-wrapper"],
+    ["Radios", "input[type=radio], [role=radio], .MuiRadio-root, .ant-radio-wrapper"],
+    ["Switches", "[role=switch], .MuiSwitch-root, .ant-switch"],
+    ["Tables & grids", "table, [role=grid], [role=treegrid]"],
+    ["Tabs", "[role=tablist], .MuiTabs-root, .ant-tabs-nav"],
+    ["Pills & tags", ".MuiChip-root, .ant-tag, .badge, [class*=chip], [class*=Chip], [class*=badge], [class*=Badge], [class*=pill], [class*=Pill]"],
+    ["Pagination", ".MuiPagination-root, .MuiTablePagination-root, .ant-pagination, .pagination, [aria-label*=pagination i]"],
+    ["Breadcrumbs", ".MuiBreadcrumbs-root, .ant-breadcrumb, [aria-label*=breadcrumb i], [class*=breadcrumb], [class*=Breadcrumb]"],
+    ["Cards & panels", ".MuiCard-root, .MuiPaper-root, .ant-card, .card, [class*=card], [class*=Card], [class*=panel], [class*=Panel]"],
+    ["Avatars", ".MuiAvatar-root, .ant-avatar, [class*=avatar], [class*=Avatar]"],
+    ["Menus & nav", "nav, [role=menu], [role=menubar], [role=navigation]"],
+    ["Dialogs", "[role=dialog], .MuiDialog-root, .ant-modal"],
+    ["Alerts", "[role=alert], [role=status], .MuiAlert-root, .ant-alert"],
+    ["Progress", "[role=progressbar], progress"],
+    ["Tooltips", "[role=tooltip]"],
+    ["Headings", "h1, h2, h3"],
+    ["Images", "img"],
+    ["Icons", "svg"],
+  ];
+  const ours = (el) => !!el.closest("#pm-toolbar, .pm-dl, .pm-export-menu, .pm-hl-layer, .pm-qe, .pm-edit-badge");
+  const shown = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return false;
+    const cs = getComputedStyle(el);
+    return cs.visibility !== "hidden" && cs.display !== "none" && Number(cs.opacity) > 0;
+  };
+  function findParts() {
+    const out = [];
+    for (const [kind, sel] of PART_KINDS) {
+      let els;
+      try { els = [...document.body.querySelectorAll(sel)]; } catch { continue; }
+      els = els.filter((el) => !ours(el) && shown(el));
+      // A match nested inside another match of the same kind is one part.
+      const set = new Set(els);
+      els = els.filter((el) => { for (let p = el.parentElement; p; p = p.parentElement) if (set.has(p)) return false; return true; });
+      if (els.length) out.push({ kind, els });
+    }
+    return out;
+  }
+
+  // Elements by computed style, built on first hover.
+  let styleIndex = null;
+  function buildStyleIndex() {
+    const idx = { color: new Map(), bg: new Map(), type: new Map(), radius: new Map(), border: new Map() };
+    const add = (m, k, el) => { if (!k) return; if (!m.has(k)) m.set(k, []); m.get(k).push(el); };
+    const all = document.body.getElementsByTagName("*");
+    for (let i = 0, n = 0; i < all.length && n < 8000; i++) {
+      const el = all[i];
+      if (ours(el) || !shown(el)) continue;
+      n++;
+      const cs = getComputedStyle(el);
+      const text = [...el.childNodes].some((c) => c.nodeType === 3 && c.nodeValue.trim());
+      if (text) { add(idx.color, cs.color, el); add(idx.type, `${cs.fontSize} / ${cs.fontWeight}`, el); }
+      if (!/^(transparent|rgba\(\s*0,\s*0,\s*0,\s*0\s*\))$/.test(cs.backgroundColor)) add(idx.bg, cs.backgroundColor, el);
+      if (cs.borderTopLeftRadius !== "0px") add(idx.radius, cs.borderRadius, el);
+      if (cs.borderTopStyle !== "none" && parseFloat(cs.borderTopWidth) > 0) add(idx.border, `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`, el);
+    }
+    return idx;
+  }
+
+  // ---- highlighting on the page ----
+  const hlLayer = document.createElement("div");
+  hlLayer.className = "pm-hl-layer";
+  document.documentElement.appendChild(hlLayer);
+  let hlEls = [];
+  function drawHighlights() {
+    hlLayer.innerHTML = "";
+    hlEls.slice(0, 200).forEach((el, i) => {
+      const r = el.getBoundingClientRect();
+      if (r.bottom < 0 || r.top > innerHeight || r.width < 1) return;
+      const b = document.createElement("div");
+      b.className = "pm-hl-box" + (i === 0 ? " pm-first" : "");
+      Object.assign(b.style, { left: `${r.left - 2}px`, top: `${r.top - 2}px`, width: `${r.width + 4}px`, height: `${r.height + 4}px` });
+      hlLayer.appendChild(b);
+    });
+  }
+  function highlight(els) { hlEls = els || []; drawHighlights(); }
+  addEventListener("scroll", () => { if (hlEls.length) drawHighlights(); }, true);
+  addEventListener("resize", () => { if (hlEls.length) drawHighlights(); });
+  let parts = [];
+  function elementsFor(key) {
+    const [type, ...rest] = key.split(":");
+    const value = rest.join(":");
+    if (type === "part") return (parts.find((p) => p.kind === value) || { els: [] }).els;
+    styleIndex = styleIndex || buildStyleIndex();
+    if (type === "type") {
+      const [size, weight] = value.split(" / ");
+      return styleIndex.type.get(`${size} / ${weight}`) || [];
+    }
+    return (styleIndex[type] && styleIndex[type].get(value)) || [];
+  }
+
+  function renderDesign(d) {
+    const esc = escapeText;
+    const libs = d.libraries || [];
+    parts = findParts();
+    const hex = (v) => {
+      const m = v.match(/rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/);
+      if (!m) return v;
+      const h = "#" + [m[1], m[2], m[3]].map((n) => Number(n).toString(16).padStart(2, "0")).join("");
+      return m[4] != null && Number(m[4]) < 1 ? `${h} ${Math.round(Number(m[4]) * 100)}%` : h;
+    };
+    const sw = (arr, type) => arr.map((c) => `<div class="pm-dl-sw" data-hl="${type}:${esc(c.value)}" title="${esc(c.value)} · used ${c.count}×"><span style="background:${esc(c.value)}"></span><span>${esc(hex(c.value))}</span></div>`).join("");
+    const fam = d.fontFamilies && d.fontFamilies[0] ? d.fontFamilies[0].value : "inherit";
+    const type = (d.typeScale || []).map((t) => {
+      const [size, weight] = t.value.split(" / ");
+      return `<div class="pm-dl-type" data-hl="type:${esc(size)} / ${esc(weight)}"><span style="font-family:${esc(fam)};font-size:${esc(size)};font-weight:${esc(weight)};line-height:1.2">The quick brown fox</span><span>${esc(size)} · ${esc(weight)}</span></div>`;
+    }).join("");
+    const radii = (d.radii || []).map((r) => `<div class="pm-dl-shape" data-hl="radius:${esc(r.value)}" style="border-radius:${esc(r.value)}"><span>${esc(r.value.split(" ")[0])}</span></div>`).join("");
+    const borders = (d.borders || []).map((b) => `<div class="pm-dl-line" data-hl="border:${esc(b.value)}"><i style="border:${esc(b.value)};background:transparent"></i>${esc(b.value.replace(/rgba?\([^)]*\)/, (c) => hex(c)))}</div>`).join("");
+    const shadows = (d.shadows || []).map((sh) => `<div class="pm-dl-shape" style="box-shadow:${esc(sh.value)}"></div>`).join("");
+    const primary = libs.find((l) => !l.styling);
+    designPanel.innerHTML = `
+      <button class="pm-dl-close" title="Close">&times;</button>
+      <h3>Design language</h3>
+      <p class="pm-dl-sub">Read from this page${d.measured ? `: ${d.elementsCounted} elements measured` : ""}. Hover anything to find it on the page.</p>
+      <h4>Built with</h4>
+      <div class="pm-dl-chips">${primary ? "" : `<span class="pm-dl-chip">Custom components</span>`}${libs.map((l, i) => `<span class="pm-dl-chip${i || l.styling ? " pm-dim" : ""}">${esc(l.name)}${l.styling ? " (styling)" : ""}</span>`).join("")}${libs.length ? "" : `<span class="pm-dl-chip pm-dim">Hand-written CSS</span>`}</div>
+      ${parts.length ? `<h4>Components on this page</h4><div class="pm-dl-chips">${parts.map((p) => `<span class="pm-dl-chip pm-dim" data-hl="part:${esc(p.kind)}">${esc(p.kind)}<b>${p.els.length}</b></span>`).join("")}</div>` : ""}
+      ${d.measured ? `
+      <h4>Text colours</h4><div class="pm-dl-swatches">${sw(d.textColors.slice(0, 8), "color")}</div>
+      <h4>Surfaces</h4><div class="pm-dl-swatches">${sw(d.backgrounds.slice(0, 8), "bg")}</div>
+      <h4>Type · ${esc(fam.split(",")[0].replace(/["']/g, ""))}</h4>${type}
+      ${borders ? `<h4>Borders</h4>${borders}` : ""}
+      ${radii ? `<h4>Corner radii</h4><div class="pm-dl-shapes">${radii}</div>` : ""}
+      ${shadows ? `<h4 style="margin-top:22px">Shadows</h4><div class="pm-dl-shapes pm-shadows">${shadows}</div>` : ""}` : `<p class="pm-dl-note">This capture predates measuring. Capture the page again to see its colours, type and shapes.</p>`}
+      <p class="pm-dl-note" style="margin-top:22px">The agent builds with these: it copies the page's own components, and builds what's missing the way ${primary ? esc(primary.name) : "the page's own markup"} would, in these colours, type and shapes.</p>`;
+    designPanel.querySelector(".pm-dl-close").addEventListener("click", () => { designPanel.classList.remove("pm-open"); highlight([]); });
+  }
+  designPanel.addEventListener("mouseover", (e) => {
+    const t = e.target.closest("[data-hl]");
+    if (t) highlight(elementsFor(t.getAttribute("data-hl")));
+  });
+  designPanel.addEventListener("mouseleave", () => highlight([]));
+  designPanel.addEventListener("click", (e) => {
+    const t = e.target.closest("[data-hl]");
+    if (!t) return;
+    const els = elementsFor(t.getAttribute("data-hl"));
+    if (!els.length) return;
+    els[0].scrollIntoView({ block: "center", behavior: "smooth" });
+    highlight(els);
+  });
+
+  async function loadDesign({ open, mark } = {}) {
+    try {
+      designData = await fetch(`/page-design?slug=${encodeURIComponent(slug)}${mark ? "&mark=1" : ""}`).then((r) => r.json());
+    } catch {
+      return;
+    }
+    if (!designData || !designData.ok) return;
+    renderDesign(designData);
+    if (open || (mark && designData.firstTime && (designData.measured || designData.libraries.length))) designPanel.classList.add("pm-open");
+  }
+  designBtn.addEventListener("click", () => {
+    if (designPanel.classList.contains("pm-open")) designPanel.classList.remove("pm-open");
+    else if (designData) { renderDesign(designData); designPanel.classList.add("pm-open"); } // re-read: edits change the page
+    else loadDesign({ open: true });
+  });
+  loadDesign({ mark: true });
   instrEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) sendPrompt();
   });
 
   // ---------- export menu (Diff Export / HTML Export) ----------
 
+  // Opens below the button when it sits in the top half (it lives in the
+  // card's top-right corner), above it otherwise, right-aligned to it.
   function positionExportMenu() {
     const r = exportBtn.getBoundingClientRect();
-    exportMenu.style.left = `${Math.max(8, r.left)}px`;
-    exportMenu.style.top = `${r.top - 8}px`;
-    exportMenu.style.transform = "translateY(-100%)";
+    exportMenu.style.left = `${Math.max(8, r.right - 150)}px`;
+    if (r.top < innerHeight / 2) {
+      exportMenu.style.top = `${r.bottom + 8}px`;
+      exportMenu.style.transform = "none";
+    } else {
+      exportMenu.style.top = `${r.top - 8}px`;
+      exportMenu.style.transform = "translateY(-100%)";
+    }
   }
   function toggleExportMenu(on) {
     if (on) positionExportMenu();
@@ -1828,6 +2072,7 @@
   // waits for it and reflects progress.
 
   const TOAST_KEY = `pm-toast-${slug}`;
+  const DRAFT_KEY = `pm-draft-${slug}`;
   const fidelityBanner = toolbar.querySelector("#pm-fidelity-banner");
   const fidelityEnhanceBtn = toolbar.querySelector("#pm-fidelity-enhance");
   const fidelitySkipBtn = toolbar.querySelector("#pm-fidelity-skip");
@@ -1859,11 +2104,16 @@
     }).catch(() => {}); // best-effort — worst case the banner just reappears next load
   });
 
+  // The fidelity pass fixes what the capture missed and then reloads the
+  // page. The composer stays usable meanwhile, so the user can write their
+  // request, and the draft survives the reload (only sending waits).
   function startAgentPoll() {
     openCard();
     setThinking(true);
+    cardEl.classList.add("pm-typeable");
+    sendBtn.disabled = true;
     const t0 = Date.now();
-    setStatus("enhancing fidelity against a screenshot… 0s");
+    setStatus("fixing what the capture missed… 0s");
     const poll = setInterval(async () => {
       let data;
       try {
@@ -1872,14 +2122,15 @@
         return; // transient network hiccup — just try again next tick
       }
       if (!data || data.status === "running") {
-        setStatus(`enhancing fidelity against a screenshot… ${Math.round((Date.now() - t0) / 1000)}s`);
+        setStatus(`fixing what the capture missed… ${Math.round((Date.now() - t0) / 1000)}s`);
         return;
       }
       clearInterval(poll);
       const toast = data.status === "cancelled" ? "stopped — edits made so far are kept"
-        : data.status === "failed" ? "fidelity pass failed — check server.log"
-        : "fidelity pass complete";
+        : data.status === "failed" ? "couldn't fix what the capture missed — check server.log"
+        : "fixed what the capture missed";
       sessionStorage.setItem(TOAST_KEY, toast);
+      if (instrEl.value.trim()) sessionStorage.setItem(DRAFT_KEY, instrEl.value);
       location.reload(); // simplest way to resync the DOM with whatever runFidelityPass wrote to disk
     }, 2000);
   }
@@ -1889,8 +2140,11 @@
   updateUndoRedoButtons();
   updateSelectionChip();
   // A returning tab (bfcache / restored session) can hand back the previous
-  // prompt still sitting in the box; start every load with an empty composer.
-  instrEl.value = "";
+  // prompt still sitting in the box; start every load with an empty composer,
+  // unless a draft was saved across the fidelity pass's reload.
+  instrEl.value = sessionStorage.getItem(DRAFT_KEY) || "";
+  sessionStorage.removeItem(DRAFT_KEY);
+  if (instrEl.value) growInput();
   restoreLastRunStatus();
   checkForUpdate();
   setInterval(checkForUpdate, 15 * 60 * 1000);
@@ -1905,6 +2159,10 @@
     } else if (window.__PM_FIDELITY_SHOW_BANNER) {
       openCard();
       fidelityBanner.classList.add("pm-show");
+    } else {
+      // The editor's job is prompting: open ready to type, never as a
+      // closed pill the user has to find first.
+      openCard();
     }
   }
 

@@ -212,6 +212,7 @@
     let result = css;
     let embedded = 0;
     const failedUrls = new Map();
+    const failedFamilies = new Set();
     plans.forEach(({ block, tokens }, i) => {
       if (!tokens.length) return;
       const o = outcomes[i];
@@ -220,6 +221,8 @@
         embedded++;
       } else {
         for (const f of o.tried) failedUrls.set(f.url, f.error);
+        const fam = block.match(/font-family\s*:\s*([^;}]+)/i);
+        if (fam) failedFamilies.add(fam[1].trim().replace(/^['"]|['"]$/g, "").toLowerCase());
       }
     });
     // One line per distinct missing file, not one per duplicated rule.
@@ -227,7 +230,15 @@
     if (failures.length) {
       console.warn(`[Page Bender] ${failures.length} font file(s) could not be embedded (the text falls back to a system font):`, failures);
     }
-    return { css: result, diagnostics: { rulesFound: blocks.length, embedded, failures } };
+    // A font the capture couldn't embed is only a real gap if the live page
+    // actually rendered it: CMS 404s some of its own fonts, so live and
+    // capture already match there. document.fonts says which faces loaded.
+    const loaded = new Set();
+    try {
+      document.fonts.forEach((f) => { if (f.status === "loaded") loaded.add(f.family.replace(/^['"]|['"]$/g, "").toLowerCase()); });
+    } catch { /* older browsers: treat none as rendered */ }
+    const renderedMissing = [...failedFamilies].filter((f) => loaded.has(f));
+    return { css: result, diagnostics: { rulesFound: blocks.length, embedded, failures, renderedMissing } };
   }
 
   // Same base64-embed idea as embedFontFaces, but for our OWN bundled font
@@ -939,8 +950,10 @@
     captureBtn.disabled = true;
     sectionBtn.disabled = true;
     captureBtn.classList.add("pm-busy");
+    // The button's own label says it; the status line above stays for the
+    // result or an error (it used to repeat "capturing…" in small pink text).
     labelEl.textContent = "Capturing…";
-    setStatus("capturing…", true);
+    setStatus("", false);
     // Everything below used to run with nothing catching a rejection —
     // any throw (a hung/failed cross-frame iframe bake, a background.js
     // message that never got a response, an "Extension context invalidated"

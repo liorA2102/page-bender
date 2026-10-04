@@ -24,6 +24,7 @@ import { createTwoFilesPatch } from "diff";
 import { startQuickLearn, quickLearnState } from "./quick-learn.js";
 import { pageHeader, pageOutline, screensIn } from "./outline.js";
 import { designSystemParts } from "./ds-parts.js";
+import { detectLibraries, pageParts, tokenSummary } from "./page-ds.js";
 import { findEnvironment, rememberChoice, readConfig as readEnvironmentsConfig, refreshList as refreshEnvironmentList } from "./environments.js";
 
 const PORT = 8790;
@@ -42,6 +43,8 @@ let versionCache = { checkedAt: 0, currentSha: null, latestSha: null, latestMess
 const ORIGINAL_FILE = "original.html";
 const WORKING_FILE = "working.html";
 const SCREENSHOT_FILE = "capture-screenshot.txt";
+// The live page's style census, taken at capture (see server/page-ds.js).
+const CENSUS_FILE = "census.json";
 
 // One in-flight agent run per slug, at most — covers both the capture-time
 // fidelity pass and a manual /prompt call with a single mechanism, since a
@@ -246,7 +249,7 @@ function readBody(req) {
 
 async function handleCapture(req, res) {
   const body = JSON.parse(await readBody(req));
-  const { html, title, url, screenshot, fontDiagnostics } = body;
+  const { html, title, url, screenshot, fontDiagnostics, census } = body;
   if (!html) return sendJson(res, 400, { error: "missing html" });
 
   const slug = slugify(title || url);
@@ -276,6 +279,24 @@ async function handleCapture(req, res) {
   // so the toolbar can offer it as an opt-in action later — see
   // handleFidelityStart, triggered from the mock page's own UI.
   if (screenshot) fs.writeFileSync(path.join(dir, SCREENSHOT_FILE), screenshot, "utf8");
+  if (census && census.ok) fs.writeFileSync(path.join(dir, CENSUS_FILE), JSON.stringify(census), "utf8");
+  // The fidelity pass runs only when the capture found a real gap: a font the
+  // live page rendered but the capture couldn't embed, or a stylesheet it
+  // couldn't read. Then it starts by itself, aimed at that gap. Otherwise it
+  // never runs and nothing asks (the old one-time banner asked on every
+  // capture, and people skipped it by reflex).
+  const gaps = [];
+  if (fontDiagnostics) {
+    for (const f of fontDiagnostics.renderedMissing || []) gaps.push(`the font "${f}" (the live page rendered it; the capture couldn't embed it)`);
+    if (fontDiagnostics.sheetsSkippedCrossOrigin > 0) gaps.push(`${fontDiagnostics.sheetsSkippedCrossOrigin} stylesheet(s) the capture couldn't read`);
+  }
+  if (gaps.length && screenshot) {
+    writeMetaPatch(dir, { fidelityStarted: true, fidelityGaps: gaps });
+    console.log(`[capture] gaps found, fixing: ${gaps.join("; ")}`);
+    runFidelityPass(dir, slug, screenshot, gaps);
+  } else {
+    writeMetaPatch(dir, { fidelityStarted: true });
+  }
 
   sendJson(res, 200, { slug, previewUrl: `http://${HOST}:${PORT}/mock/${slug}/${WORKING_FILE}` });
   // While the user looks at the copy, learn the product it came from, so
@@ -921,14 +942,14 @@ function totalTokenCount(usage) {
   return (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
 }
 
-async function runFidelityPass(dir, slug, screenshot) {
+async function runFidelityPass(dir, slug, screenshot, gaps = []) {
   const t0 = Date.now();
   console.log(`[capture] diagnostic pass starting (maxTurns=25)...`);
   try {
     const { toolCalls, resultText, totalCostUsd, usage, numTurns } = await runAgentTurn({
       dir,
       slug,
-      instruction: "Take one look at the attached screenshot and fix anything that's noticeably visually wrong, per your instructions. Don't verify piecemeal.",
+      instruction: `Take one look at the attached screenshot and fix anything that's noticeably visually wrong, per your instructions. Don't verify piecemeal.${gaps.length ? ` The capture reported these gaps; start with them: ${gaps.join("; ")}.` : ""}`,
       images: [screenshot],
       systemPrompt: DIAGNOSTIC_SYSTEM_PROMPT,
       maxTurns: 25,
@@ -1382,7 +1403,16 @@ async function handleDesignSystemEnsure(req, res) {
   const { slug } = JSON.parse((await readBody(req)) || "{}");
   const dir = resolveProjectDir(slug);
   const found = await productForMock(dir);
-  if (!found) return sendJson(res, 200, { ok: true, product: null });
+  // With no design system to use, the agent builds from the page itself:
+  // say so, and which library the page is built on.
+  const fromPage = () => {
+    try {
+      return { libraries: detectLibraries(fs.readFileSync(path.join(dir, WORKING_FILE), "utf8")).map((l) => l.name) };
+    } catch {
+      return { libraries: [] };
+    }
+  };
+  if (!found) return sendJson(res, 200, { ok: true, product: null, page: fromPage() });
   startQuickLearnFor(found);
   const info = designSystemInfo(found.product);
   const learning = quickLearnState(found.product);
@@ -1400,6 +1430,7 @@ async function handleDesignSystemEnsure(req, res) {
     copy: !found.pick ? "none" : found.pick.signedIn === false ? "sign-in" : "ok",
     signInUrl: found.pick && found.pick.signedIn === false ? `https://${found.pick.host}/` : null,
     serviceExpired: found.serviceStatus === "auth-expired",
+    page: info.full || info.quick ? null : fromPage(),
     generating: job ? { job: job[0], status: entry && entry.status === "running" ? "running" : job[1].status, step: entry && entry.status === "running" ? entry.step : null, elapsedMs: Date.now() - job[1].startedAt, error: job[1].error || null } : null,
   });
 }
@@ -1453,10 +1484,9 @@ Never publish or commit anything.
 // known product or no design system exists yet.
 function designSystemPrompt(dir, slug) {
   const meta = readMeta(dir);
-  if (!meta.product) return "";
-  const info = designSystemInfo(meta.product);
+  const info = meta.product ? designSystemInfo(meta.product) : { full: null, quick: null };
   const ds = info.full || info.quick;
-  if (!ds) return "";
+  if (!ds) return pageDesignPrompt(dir);
   const label = meta.productLabel || meta.product;
   const what = info.full
     ? `a full design system at ${ds.dir}: tokens.json and tokens.css (measured values), components/index.md and components/*.html (real component captures with their class names), shell.html, and README.md (which names the visual families; keep each screen to one).`
@@ -1559,6 +1589,88 @@ function partsFor(dsDir, components, dir) {
   ].filter(Boolean).concat(parts.map((pt) => pt.markup
     ? `--- part: ${pt.name} (${pt.family || "-"} family, from ${pt.page || "?"}) ---\n${pt.markup}`
     : `--- part: ${pt.name} (from ${pt.page || "?"}): too large to list (${pt.size} characters); open ${path.join(dsDir, pt.file)} only if you need it ---`));
+}
+
+// The page's design language, for the editor's "Design" panel: what it is
+// built with and what it measures, read from the capture alone, so it works
+// on any page. Marks the panel as shown the first time it is asked for, so
+// it opens by itself once per capture.
+function handlePageDesign(req, res, params) {
+  const slug = params.get("slug");
+  let dir;
+  try { dir = resolveProjectDir(slug); } catch { return sendJson(res, 400, { ok: false, error: "bad slug" }); }
+  let html = "";
+  try { html = fs.readFileSync(path.join(dir, ORIGINAL_FILE), "utf8"); } catch { return sendJson(res, 404, { ok: false, error: "unknown mock" }); }
+  let census = null;
+  try { census = JSON.parse(fs.readFileSync(path.join(dir, CENSUS_FILE), "utf8")); } catch {}
+  const meta = readMeta(dir);
+  const firstTime = !meta.designShown;
+  if (firstTime && params.get("mark") === "1") writeMetaPatch(dir, { designShown: true });
+  const top = (arr, n) => (arr || []).slice(0, n).map((x) => ({ value: x.value, count: x.count }));
+  sendJson(res, 200, {
+    ok: true,
+    firstTime,
+    libraries: detectLibraries(html),
+    parts: pageParts(html).map((p) => p.kind),
+    measured: !!census,
+    body: census && census.body,
+    textColors: census ? top(census.textColors, 8) : [],
+    backgrounds: census ? top(census.backgrounds, 8) : [],
+    borders: census ? top(census.borders, 4) : [],
+    fontFamilies: census ? top(census.fontFamilies, 3) : [],
+    typeScale: census ? top(census.typeScale, 7) : [],
+    radii: census ? top(census.radii, 6) : [],
+    shadows: census ? top(census.shadows, 3) : [],
+    variables: census && census.rootCustomProperties ? Object.keys(census.rootCustomProperties).length : 0,
+    elementsCounted: census ? census.elementsCounted : 0,
+  });
+}
+
+// No design system for this product (unknown to Page Bender, or no running
+// copy to learn from): the agent builds from the captured page itself, its
+// own parts, its measured values, and the component library it is built on.
+function pageDesignPrompt(dir) {
+  let html = "";
+  try { html = fs.readFileSync(path.join(dir, WORKING_FILE), "utf8"); } catch { return ""; }
+  let census = null;
+  try { census = JSON.parse(fs.readFileSync(path.join(dir, CENSUS_FILE), "utf8")); } catch {}
+  const libs = detectLibraries(html);
+  const parts = pageParts(html);
+  const tokens = tokenSummary(census);
+  const header = pageHeader(html);
+  if (!libs.length && !parts.length && !tokens && !header) return "";
+  const lib = libs.length ? libs.map((l) => l.name).join(", ") : "no recognisable component library (hand-written CSS)";
+  const component = libs.find((l) => !l.styling);
+  return `
+
+THIS PAGE'S DESIGN LANGUAGE: Page Bender has no design system for this product, so build from the
+page itself. It is built with ${lib} (detected from its class names). Its own parts below are
+already styled here: copy them as they are, changing only text. For a component the page doesn't
+have, build it the way ${component ? component.name : "the page's own markup"} builds it (its markup structure, class
+naming and states${component ? `, from your knowledge of ${component.name}` : ""}), and style it with a <style> block that uses only the
+measured values below: never a colour, font, size or radius the page doesn't use.
+
+WORK FAST: the user is waiting. The outline, the parts and the values answer most questions, so
+search only for what they don't. Write new markup in as few edits as you can, then run at most one
+combined check; don't count rows, re-read what you wrote, or verify styling by grepping.
+
+NEW SCREENS: a request may need screens this page doesn't have. They live inside the page's shell
+(its navigation and header stay). Write the whole screen's markup, in one Write, to
+${path.join(dir, "screen-<name>.html")} (start it with this page's header, and put the <style> block
+for anything you build at its top), then place it with one command:
+   node ${path.join(REPO_ROOT, "agent", "pb-screens.mjs")} screen ${path.join(dir, WORKING_FILE)} - "<Name>" ${path.join(dir, "screen-<name>.html")} --nav-after "<a top-level nav label>"
+(or --nav "<label>" to make an existing nav item open it). Never delete a screen the user didn't
+ask to remove.
+
+ASKING: for a PRD or a request that spans several screens, first propose the screen list and wait,
+by writing ${path.join(dir, QUESTION_FILE)} as {"question": "...", "options": ["..."], "board": null}
+and ending your turn with one line. Small edits never need a question.
+
+MEASURED ON THE LIVE PAGE:
+${tokens || "(no census for this capture: read the values from the page's own CSS)"}
+
+THIS PAGE'S PARTS:
+${[header && `--- this-page-header ---\n${header}`, ...parts.map((p) => `--- ${p.kind} ---\n${p.markup}`)].filter(Boolean).join("\n\n")}`;
 }
 
 // Called when the editor sends a prompt: a quick learn under way finishes
@@ -1735,6 +1847,9 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "POST" && url.pathname === "/design-system/generate") {
     return handleDesignSystemGenerate(req, res).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
+  }
+  if (req.method === "GET" && url.pathname === "/page-design") {
+    return handlePageDesign(req, res, url.searchParams);
   }
   if (req.method === "GET" && url.pathname.startsWith("/ds/")) {
     return serveDesignSystem(req, res, decodeURIComponent(url.pathname.slice(4)));

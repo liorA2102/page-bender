@@ -6,7 +6,7 @@
 //   node agent/pb-screens.mjs add <file> <Name> [--current <Name of the existing page>]
 //   node agent/pb-screens.mjs link <file> "<nav label>" <Name>
 //   node agent/pb-screens.mjs css <file> <design-system folder> <part> [<part>...]
-//   node agent/pb-screens.mjs screen <file> <design-system folder> <Name> <markup file>
+//   node agent/pb-screens.mjs screen <file> <design-system folder, or -> <Name> <markup file>
 //        [--current <Name of the existing page>] [--nav "<label>" | --nav-after "<label>"]
 //
 // add: the first time, wraps the main content area's existing content as a
@@ -167,8 +167,8 @@ if (cmd === "outline") {
   if (screensIn(html).includes(name)) fail(`a screen named "${name}" already exists: edit it in place`);
   const markup = fs.readFileSync(markupFile, "utf8");
   const first = !screensIn(html).length;
-  const index = JSON.parse(fs.readFileSync(path.join(dsDir, "raw", "index.json"), "utf8"));
-  const css = cssForMarkup(markup, designSystemParts(dsDir, index.components), pageStyles(html));
+  // "-": no design system, only this page's own parts, which it styles already.
+  const css = dsDir === "-" ? "" : cssForMarkup(markup, designSystemParts(dsDir, JSON.parse(fs.readFileSync(path.join(dsDir, "raw", "index.json"), "utf8")).components), pageStyles(html));
   html = wrapExisting(html, current);
   if (first) html = wireCurrent(html, current || "Home");
   const main = findLandmark(html, "main");

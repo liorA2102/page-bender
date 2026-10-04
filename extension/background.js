@@ -30,7 +30,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
       if (msg.type === "PM_CAPTURE") {
-        const data = await postJson("/capture", { html: msg.html, title: msg.title, url: msg.url, screenshot: msg.screenshot, fontDiagnostics: msg.fontDiagnostics });
+        // The live page's style census goes with every capture: when there is
+        // no design system for the product, the editing agent builds from the
+        // page's own measured colours, type and radii (see server/page-ds.js).
+        let census = null;
+        if (sender.tab && sender.tab.id != null) {
+          try { census = await callDriver(sender.tab.id, "styles"); } catch { /* a capture never fails for want of it */ }
+        }
+        const data = await postJson("/capture", { html: msg.html, title: msg.title, url: msg.url, screenshot: msg.screenshot, fontDiagnostics: msg.fontDiagnostics, census });
         sendResponse({ ok: true, ...data });
         return;
       }
