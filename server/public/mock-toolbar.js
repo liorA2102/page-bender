@@ -605,6 +605,7 @@
     info: svgIcon('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>', 13),
     edit: svgIcon('<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>', 12),
     sliders: svgIcon('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>', 15),
+    screens: svgIcon('<rect x="3" y="4" width="13" height="10" rx="1.5"/><path d="M8 18h11a2 2 0 0 0 2-2V8"/>'),
     plus: svgIcon('<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>', 11),
     trash: svgIcon('<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>', 13),
     duplicate: svgIcon('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>', 13),
@@ -1139,6 +1140,7 @@
       .pm-bubble::after { content: ""; position: absolute; inset: -6px; border-radius: 50%;
         border: 1.5px solid rgba(255,110,199,.5); animation: pm-breathe 2.6s ease-in-out infinite; }
 
+      .pm-bubble.pm-alert::after { border-color: var(--pm-pink); border-width: 3px; animation-duration: .9s; }
       .pm-pill-dot { width: 8px; height: 8px; border-radius: 50%; flex: none;
         background: var(--pm-pink); box-shadow: 0 0 0 2px rgba(20,14,22,.9);
         animation: pm-breathe 2s ease-in-out infinite; }
@@ -1151,6 +1153,30 @@
         color: #1c0f18; background: linear-gradient(135deg, var(--pm-pink), var(--pm-pink-3));
         padding: 6px 11px; border-radius: 999px; }
       .pm-update-btn:disabled { opacity: .55; cursor: default; }
+      .pm-ds { display: none; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--pm-text-dim);
+        margin: 0 0 12px; line-height: 1.45; }
+      .pm-ds.pm-show { display: flex; }
+      .pm-ds .pm-ds-dot { width: 7px; height: 7px; border-radius: 50%; background: #5fd49a; flex: none; }
+      .pm-ds.pm-learning .pm-ds-dot { background: var(--pm-pink-2); animation: pm-breathe 1.4s ease-in-out infinite; }
+      .pm-ds.pm-warn .pm-ds-dot { background: #ffb85c; }
+      .pm-ds a { color: var(--pm-pink-2); text-decoration: none; }
+      .pm-ds a:hover { text-decoration: underline; }
+      .pm-ds .pm-ds-text { flex: 1 1 200px; min-width: 0; }
+      .pm-gen { all: unset; cursor: pointer; font: 500 11.5px 'Plus Jakarta Sans', sans-serif; color: var(--pm-text);
+        padding: 8px 12px; border-radius: 999px; border: 1px solid var(--pm-border); white-space: nowrap; flex: none; }
+      .pm-gen:hover:not(:disabled) { border-color: rgba(255,61,146,.45); color: var(--pm-pink-2); }
+      .pm-gen:disabled { opacity: .35; cursor: default; }
+      .pm-card.pm-thinking .pm-gen { display: none; }
+      .pm-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+      .pm-question { display: none; font-size: 13px; color: var(--pm-text); line-height: 1.45; margin: 0 0 12px;
+        padding: 10px 12px; border-radius: 10px; background: rgba(255,110,199,.07); border: 1px solid rgba(255,110,199,.25);
+        white-space: pre-wrap; }
+      .pm-question.pm-show { display: block; }
+      .pm-question a { color: var(--pm-pink-2); }
+      .pm-qopts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; white-space: normal; }
+      .pm-qopts button { all: unset; cursor: pointer; font: 500 11.5px 'Plus Jakarta Sans', sans-serif; padding: 5px 10px;
+        border-radius: 999px; border: 1px solid var(--pm-border); color: var(--pm-text-dim); }
+      .pm-qopts button:hover { border-color: rgba(255,61,146,.45); color: var(--pm-pink-2); }
       .pm-fidelity-skip { all: unset; cursor: pointer; font: 600 11px 'Plus Jakarta Sans', sans-serif;
         color: var(--pm-text-mute); padding: 6px 8px; }
       .pm-fidelity-skip:hover { color: var(--pm-text-dim); }
@@ -1184,6 +1210,8 @@
           <button class="pm-update-btn" id="pm-fidelity-enhance">Enhance</button>
         </span>
       </div>
+      <div id="pm-ds" class="pm-ds"></div>
+      <div id="pm-question" class="pm-question"></div>
       <div id="pm-chip" class="pm-chip" style="display:none;">
         <img id="pm-chip-thumb" />
         <span id="pm-chip-text"></span>
@@ -1199,10 +1227,14 @@
           <button class="pm-tool" id="pm-undo" title="Undo">${ICONS.undo}</button>
           <button class="pm-tool" id="pm-redo" title="Redo">${ICONS.redo}</button>
           <button class="pm-tool" id="pm-export">${ICONS.exportIco} Export</button>
+          <button class="pm-tool" id="pm-screens" style="display:none;" title="Switch between this mock's screens">${ICONS.screens} Screens</button>
         </div>
+        <div class="pm-actions">
+          <button class="pm-gen" id="pm-gen" style="display:none;" title="Learn the whole product: about 15 pages and every component (takes a while)">Generate full design system</button>
         <button class="pm-send" id="pm-send" title="Send">
           <span class="pm-ar">${ICONS.arrowRight}</span><span class="pm-sp"></span>
         </button>
+        </div>
       </div>
     </div>
     <button class="pm-bubble" id="pm-restore" title="Restore Page Bender">${ICONS.bend}</button>
@@ -1223,6 +1255,10 @@
     <button class="pm-export-opt" data-kind="html">HTML Export</button>
   `;
   document.documentElement.appendChild(exportMenu);
+
+  const screensMenu = document.createElement("div");
+  screensMenu.className = "pm-export-menu";
+  document.documentElement.appendChild(screensMenu);
 
   const cardEl = toolbar.querySelector(".pm-card");
   const pillEl = toolbar.querySelector(".pm-pill");
@@ -1348,7 +1384,13 @@
     instrEl.style.height = Math.min(instrEl.scrollHeight, 140) + "px";
   }
 
+  // The pill's dot also flags an update; only clear it for our own alerts.
+  function clearAlert() {
+    bubbleEl.classList.remove("pm-alert");
+    if (!updateBannerEl.classList.contains("pm-show")) pillDotEl.style.display = "none";
+  }
   function openCard() {
+    clearAlert();
     cardEl.classList.add("pm-open");
     pillEl.classList.add("pm-hidden");
     scrimEl.classList.add("pm-on");
@@ -1367,6 +1409,7 @@
     bubbleEl.classList.add("pm-show");
   }
   function restoreCard() {
+    clearAlert();
     bubbleEl.classList.remove("pm-show");
     cardEl.classList.add("pm-open");
     scrimEl.classList.add("pm-on");
@@ -1424,9 +1467,23 @@
   undoBtn.addEventListener("click", () => { if (pointer > 0) applyHistoryIndex(--pointer); });
   redoBtn.addEventListener("click", () => { if (pointer < history.length - 1) applyHistoryIndex(++pointer); });
 
+  // The agent (and agent/pb-screens.mjs) add CSS to the page's <head>, but
+  // only the body is swapped in after a run, so new styles stayed invisible
+  // until a reload (4 Oct 2026: a dashboard's new cards rendered as bare
+  // text). Add any head style the file now has that this page doesn't. The
+  // toolbar's own head styles are left alone.
+  function syncHeadStyles(doc) {
+    const key = (el) => `${el.tagName}|${el.getAttribute("href") || ""}|${el.textContent.length}|${el.textContent.slice(0, 200)}`;
+    const have = new Set([...document.head.querySelectorAll("style, link[rel=stylesheet]")].map(key));
+    for (const el of doc.head.querySelectorAll("style, link[rel=stylesheet]")) {
+      if (!have.has(key(el))) document.head.appendChild(el.cloneNode(true));
+    }
+  }
+
   async function sendPrompt() {
     const instruction = instrEl.value.trim();
     if (!instruction) return;
+    hideQuestion();
     sendBtn.disabled = true;
     sendBtn.classList.add("pm-loading");
     setThinking(true);
@@ -1484,6 +1541,7 @@
       sessionId = resp.sessionId || sessionId;
       const doc = new DOMParser().parseFromString(resp.html, "text/html");
       document.body.innerHTML = doc.body.innerHTML;
+      syncHeadStyles(doc);
       pushHistory(document.body.innerHTML, { persist: false }); // agent already wrote the file
       instrEl.value = "";
       pendingImage = null;
@@ -1497,10 +1555,204 @@
       const tokens = formatTokenCompact(resp.totalTokens);
       outcome = secs != null && tokens != null ? `Done. ${secs} Sec, ${tokens} Token` : "done ✓";
     }
+    if (resp.question && resp.question.question) {
+      showQuestion(resp.question);
+      outcome = "waiting for your answer";
+      notify();
+    }
     setStatus(outcome);
     rememberLastRun(outcome);
+    refreshScreens();
   }
   sendBtn.addEventListener("click", sendPrompt);
+
+  // ---------- the product's design system ----------
+  // Every capture of a known product has its design system behind it: the
+  // server starts a quick learn right after the capture, and this line says
+  // where it stands. "Generate design system" runs the full one.
+  const dsEl = toolbar.querySelector("#pm-ds");
+  const genBtn = toolbar.querySelector("#pm-gen");
+  const questionEl = toolbar.querySelector("#pm-question");
+  const screensBtn = toolbar.querySelector("#pm-screens");
+  let dsTimer = null;
+  let dsWasBusy = false;
+
+  function escapeText(t) {
+    const d = document.createElement("div");
+    d.textContent = t == null ? "" : String(t);
+    return d.innerHTML;
+  }
+  function formatDay(date) {
+    return new Date(`${date}T12:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  }
+  function formatElapsed(ms) {
+    const t = Math.round((ms || 0) / 1000);
+    return t < 60 ? `${t}s` : `${Math.floor(t / 60)}m ${String(t % 60).padStart(2, "0")}s`;
+  }
+
+  // A short chime, and the pill's dot when the card is out of view.
+  function notify() {
+    try {
+      const ctx = new AudioContext();
+      [880, 1320].forEach((f, i) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        const at = ctx.currentTime + i * 0.16;
+        o.frequency.value = f;
+        g.gain.setValueAtTime(0.0001, at);
+        g.gain.exponentialRampToValueAtTime(0.12, at + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, at + 0.3);
+        o.connect(g).connect(ctx.destination);
+        o.start(at);
+        o.stop(at + 0.32);
+      });
+    } catch {
+      /* no sound is fine */
+    }
+    if (!cardEl.classList.contains("pm-open")) {
+      pillDotEl.style.display = "block";
+      bubbleEl.classList.add("pm-alert");
+    }
+  }
+
+  function renderDs(d) {
+    dsEl.className = "pm-ds";
+    genBtn.style.display = "none";
+    if (!d || !d.ok || !d.product) { dsEl.innerHTML = ""; return; }
+    const label = escapeText(d.label || d.product);
+    let text = "";
+    if (d.generating && d.generating.status === "running") {
+      dsEl.classList.add("pm-learning");
+      text = `Generating the ${label} design system · ${formatElapsed(d.generating.elapsedMs)}${d.generating.step ? ` · ${escapeText(d.generating.step)}` : ""} <a href="#" data-pm-act="stop-gen">Stop</a>`;
+    } else if (d.learning) {
+      dsEl.classList.add("pm-learning");
+      text = `Learning ${label}: ${d.learning.done} of ${d.learning.total} pages`;
+    } else if (d.full) {
+      text = `<a href="${escapeText(d.full.url)}" target="_blank" rel="noopener">${label} design system · ${escapeText(formatDay(d.full.date))} · ${d.full.components} components</a>`;
+    } else if (d.quick) {
+      text = `<a href="${escapeText(d.quick.url || "#")}" target="_blank" rel="noopener">${label} quick design system · ${d.quick.pages} pages · ${escapeText(formatDay(d.quick.date))}</a>`;
+    } else if (d.copy === "sign-in") {
+      dsEl.classList.add("pm-warn");
+      text = `Sign in to the ${label} copy once so Page Bender can learn the product. <a href="${escapeText(d.signInUrl)}" target="_blank" rel="noopener">Sign in</a>`;
+    } else if (d.copy === "none") {
+      dsEl.classList.add("pm-warn");
+      text = `No running ${label} copy to learn from right now. Edits still work.`;
+    } else if (d.learnError) {
+      dsEl.classList.add("pm-warn");
+      text = `Couldn't learn ${label}: ${escapeText(d.learnError)}`;
+    }
+    if (d.generating && d.generating.status === "failed") text += ` <span>Generating failed: ${escapeText(d.generating.error)}</span>`;
+    if (d.serviceExpired && !d.full && !d.quick) text += " <span>(the environment service needs signing in again: run /mcp in Claude Code)</span>";
+    if (!text) { dsEl.innerHTML = ""; return; }
+    dsEl.innerHTML = `<span class="pm-ds-dot"></span><span class="pm-ds-text">${text}</span>`;
+    dsEl.classList.add("pm-show");
+    // Upgrades a quick learn to the full design system, so it only shows
+    // when there is no full one (a full one past 30 days counts as none).
+    if (!d.full && d.copy === "ok" && !(d.generating && d.generating.status === "running") && !d.learning) {
+      genBtn.style.display = "";
+    }
+  }
+
+  async function loadDs() {
+    clearTimeout(dsTimer);
+    let d = null;
+    try {
+      d = await fetch("/design-system/ensure", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) }).then((r) => r.json());
+    } catch {
+      /* server briefly away: retry below */
+    }
+    renderDs(d);
+    const busy = !!(d && (d.learning || (d.generating && d.generating.status === "running")));
+    const waitingOnUser = !!(d && d.copy === "sign-in");
+    if (dsWasBusy && !busy && d && (d.full || d.quick)) notify();
+    dsWasBusy = busy;
+    if (busy || waitingOnUser || !d) dsTimer = setTimeout(loadDs, busy ? 3000 : 5000);
+  }
+
+  genBtn.addEventListener("click", async () => {
+    genBtn.disabled = true;
+    try {
+      const r = await fetch("/design-system/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) }).then((x) => x.json());
+      if (!r.ok) setStatus(r.error || "couldn't start generating");
+    } catch (err) {
+      setStatus(`couldn't start generating: ${err.message}`);
+    }
+    genBtn.disabled = false;
+    loadDs();
+  });
+  dsEl.addEventListener("click", async (e) => {
+    const a = e.target.closest("[data-pm-act=stop-gen]");
+    if (!a) return;
+    e.preventDefault();
+    const d = await fetch("/design-system/ensure", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) }).then((r) => r.json()).catch(() => null);
+    if (d && d.generating) await fetch("/agent-cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug: d.generating.job }) }).catch(() => {});
+    loadDs();
+  });
+  loadDs();
+
+  // ---------- the agent's questions ----------
+  function hideQuestion() {
+    questionEl.classList.remove("pm-show");
+    questionEl.textContent = "";
+    instrEl.placeholder = "Describe a change… (Cmd/Ctrl+Enter to send)";
+  }
+  function showQuestion(q) {
+    questionEl.textContent = q.question;
+    if (q.boardUrl) {
+      const link = document.createElement("a");
+      link.href = q.boardUrl;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = "Open the concepts";
+      questionEl.append("\n", link);
+    }
+    if (q.options && q.options.length) {
+      const opts = document.createElement("div");
+      opts.className = "pm-qopts";
+      for (const o of q.options) {
+        const b = document.createElement("button");
+        b.textContent = o;
+        b.addEventListener("click", () => { instrEl.value = o; growInput(); instrEl.focus(); });
+        opts.appendChild(b);
+      }
+      questionEl.appendChild(opts);
+    }
+    questionEl.classList.add("pm-show");
+    instrEl.placeholder = "Your answer… (Cmd/Ctrl+Enter to send)";
+  }
+
+  // ---------- screens ----------
+  // A mock can hold several screens of the product, each a
+  // [data-pb-screen] section inside the product's own shell; the product's
+  // navigation switches between them. This menu does the same from the
+  // toolbar.
+  function showScreen(name) {
+    document.querySelectorAll("[data-pb-screen]").forEach((sct) => { sct.hidden = sct.getAttribute("data-pb-screen") !== name; });
+  }
+  function refreshScreens() {
+    const names = [...document.querySelectorAll("[data-pb-screen]")].map((sct) => sct.getAttribute("data-pb-screen"));
+    screensBtn.style.display = names.length > 1 ? "" : "none";
+    screensMenu.innerHTML = "";
+    for (const name of names) {
+      const b = document.createElement("button");
+      b.className = "pm-export-opt";
+      b.textContent = name;
+      b.addEventListener("click", () => { showScreen(name); screensMenu.classList.remove("pm-open"); });
+      screensMenu.appendChild(b);
+    }
+  }
+  screensBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const r = screensBtn.getBoundingClientRect();
+    screensMenu.style.left = `${Math.max(8, r.left)}px`;
+    screensMenu.style.top = `${r.top - 8}px`;
+    screensMenu.style.transform = "translateY(-100%)";
+    screensMenu.classList.toggle("pm-open");
+  });
+  document.addEventListener("click", (e) => {
+    if (screensMenu.classList.contains("pm-open") && !screensMenu.contains(e.target) && !screensBtn.contains(e.target)) screensMenu.classList.remove("pm-open");
+  });
+  refreshScreens();
   instrEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) sendPrompt();
   });

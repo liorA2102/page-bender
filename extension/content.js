@@ -453,7 +453,85 @@
   // holding the untouched baked clone, unchanged from before).
   // opts.keepAncestors is for agent captures only (see __pbAgentCapture):
   // the manual section capture never passes it, so its output is unchanged.
+  // Landmarks for the editing agent. A captured page is one large file whose
+  // body sits on a few very long lines, and an agent asked to add a screen
+  // used to spend most of a 12-minute run just finding the navigation and
+  // the main content area (4 Oct 2026). The live page knows its layout, so
+  // the capture marks them (data-pb-landmark) and the server writes an
+  // outline from the marks. Generic: semantic tags first, then geometry.
+  function visibleBox(el) {
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    return r.width > 1 && r.height > 1 && cs.display !== "none" && cs.visibility !== "hidden" ? r : null;
+  }
+  function largest(els) {
+    let best = null;
+    let bestArea = 0;
+    for (const el of els) {
+      const r = visibleBox(el);
+      if (r && r.width * r.height > bestArea) { best = el; bestArea = r.width * r.height; }
+    }
+    return best;
+  }
+  function findLandmarks() {
+    const W = innerWidth;
+    const H = innerHeight;
+    const host = document.getElementById("pm-host");
+    const ours = (el) => !el || (host && host.contains(el));
+    // Navigation: a semantic nav or aside, else the tallest narrow column
+    // hugging the left edge.
+    let nav = largest([...document.querySelectorAll("nav, [role=navigation], aside")].filter((el) => !ours(el)));
+    if (!nav) {
+      let el = document.elementFromPoint(20, H / 2);
+      while (el && el.parentElement && el.parentElement !== document.body) {
+        const pr = el.parentElement.getBoundingClientRect();
+        if (pr.width > W * 0.35) break;
+        el = el.parentElement;
+      }
+      const r = el && visibleBox(el);
+      if (r && r.width < W * 0.35 && r.height > H * 0.6) nav = el;
+    }
+    // Header: a semantic header or banner spanning most of the width.
+    const header = largest([...document.querySelectorAll("header, [role=banner]")].filter((el) => {
+      const r = visibleBox(el);
+      return r && !ours(el) && r.top < 120 && r.width > W * 0.5 && !(nav && el.contains(nav));
+    }));
+    // Main content: a semantic main, else the largest block that holds the
+    // middle of the area right of the navigation and doesn't contain it.
+    let main = largest([...document.querySelectorAll("main, [role=main]")].filter((el) => !ours(el)));
+    if (!main) {
+      const navRight = nav ? nav.getBoundingClientRect().right : 0;
+      const top = header ? header.getBoundingClientRect().bottom : 0;
+      let el = document.elementFromPoint((navRight + W) / 2, (top + H) / 2);
+      while (el && el.parentElement && el.parentElement !== document.body && el.parentElement !== document.documentElement) {
+        if (nav && el.parentElement.contains(nav)) break;
+        el = el.parentElement;
+      }
+      if (el && !ours(el) && el !== document.body && !(nav && el.contains(nav))) main = el;
+    }
+    return { nav, header, main };
+  }
+
   async function captureBakedHtml(root = document.body, opts = {}) {
+    // Full-page captures only: a section has no shell to describe.
+    const marked = [];
+    if (root === document.body) {
+      try {
+        for (const [role, el] of Object.entries(findLandmarks())) {
+          if (el && !el.hasAttribute("data-pb-landmark")) { el.setAttribute("data-pb-landmark", role); marked.push(el); }
+        }
+      } catch {
+        /* landmarks are a help for the agent, never a reason to fail a capture */
+      }
+    }
+    try {
+      return await captureBakedHtmlInner(root, opts);
+    } finally {
+      for (const el of marked) el.removeAttribute("data-pb-landmark");
+    }
+  }
+
+  async function captureBakedHtmlInner(root, opts) {
     const iframeEls = root.tagName && root.tagName.toLowerCase() === "iframe"
       ? [root]
       : Array.from(root.querySelectorAll ? root.querySelectorAll("iframe") : []);
@@ -746,9 +824,6 @@
   // visual consistency between the two capture-time and edit-time tools.
   const SELECT_ICON = svgIcon('<circle cx="12" cy="12" r="9"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/>', 18);
 
-  const SPARKLES = svgIcon('<path d="M12 3l1.8 4.9L19 9.7l-5.2 1.8L12 16.4l-1.8-4.9L5 9.7l5.2-1.8z"/><path d="M19 15l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>', 17);
-  const ARROW_RIGHT = svgIcon('<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>', 16);
-
   // Style-isolated shadow root — this panel sits on top of an arbitrary
   // host page whose own CSS could otherwise bleed in (or ours leak out).
   const host = document.createElement("div");
@@ -784,61 +859,6 @@
         border: 1px solid #2d2436; border-radius: 999px; padding: 6px 14px; display: none;
         white-space: nowrap; backdrop-filter: blur(10px); }
       .pm-status.pm-show { display: block; }
-      .pm-mock-btn { display: flex; align-items: center; gap: 8px; padding: 12px 18px; height: 46px;
-        border-radius: 999px; cursor: pointer; flex: none;
-        background: rgba(20,14,22,.9); border: 1px solid #2d2436; color: #f4eef7;
-        backdrop-filter: blur(14px); box-shadow: 0 10px 40px rgba(0,0,0,.45); font-size: 14px; }
-      .pm-mock-btn:hover { background: rgba(28,18,30,.95); }
-      .pm-mock-btn .pm-sparkle { display: flex; color: #ff6ec7; }
-      .pm-mock-btn.pm-on { border-color: rgba(255,110,199,.55); }
-
-      .pm-fcard { position: fixed; left: 50%; bottom: 100px; transform: translateX(-50%);
-        z-index: 2147483647; width: min(640px, 92vw); display: none;
-        background: linear-gradient(180deg, #18121d, #100c14); color: #f4eef7;
-        border: 1px solid #2d2436; border-radius: 22px; padding: 20px 22px 16px;
-        box-shadow: 0 30px 80px rgba(0,0,0,.65); }
-      .pm-fcard.pm-open { display: block; }
-      .pm-fcard-title { font-size: 18px; margin: 0 0 12px; padding-right: 40px; }
-      .pm-fcard-close { position: absolute; top: 14px; right: 16px; width: 26px; height: 26px; border-radius: 8px;
-        border: 1px solid #2d2436; background: rgba(255,255,255,.03); color: #d3c2d6;
-        cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 15px; line-height: 1; }
-      .pm-fcard-close:hover { background: rgba(255,61,146,.14); color: #ff9fd1; border-color: rgba(255,61,146,.3); }
-      .pm-env { font-size: 12.5px; color: #d3c2d6; background: rgba(255,255,255,.03);
-        border: 1px solid #2d2436; border-radius: 10px; padding: 8px 10px; margin-bottom: 12px;
-        display: flex; align-items: center; gap: 8px; flex-wrap: wrap; line-height: 1.45; }
-      .pm-env b { color: #f4eef7; font-weight: 600; }
-      .pm-env > span:nth-child(2) { flex: 1 1 220px; min-width: 0; }
-      .pm-env { align-items: baseline; }
-      .pm-env .pm-env-dot { align-self: center; }
-      .pm-env .pm-env-dot { width: 7px; height: 7px; border-radius: 50%; background: #776b81; flex: none; }
-      .pm-env.pm-ready .pm-env-dot { background: #5fd49a; }
-      .pm-env.pm-warn .pm-env-dot { background: #ffb85c; }
-      .pm-env a, .pm-env button.pm-link { all: unset; cursor: pointer; color: #ff9fd1; font-size: 12.5px; }
-      .pm-env a:hover, .pm-env button.pm-link:hover { text-decoration: underline; }
-      .pm-env select { background: #100c14; color: #f4eef7; border: 1px solid #2d2436; border-radius: 6px;
-        font: 12px 'Plus Jakarta Sans', system-ui, sans-serif; padding: 3px 6px; max-width: 100%; }
-      .pm-env-note { flex-basis: 100%; color: #ffb85c; font-size: 11.5px; }
-      .pm-fcard textarea { all: unset; box-sizing: border-box; display: block; width: 100%;
-        min-height: 132px; max-height: 320px; overflow-y: auto; white-space: pre-wrap; color: #ffffff;
-        font: 400 15px/1.5 'Plus Jakarta Sans', -apple-system, system-ui, sans-serif; padding: 2px 2px 12px; }
-      .pm-fcard textarea::placeholder { color: #776b81; }
-      .pm-fstatus { font-size: 12px; color: #776b81; min-height: 15px; margin-bottom: 10px; line-height: 1.4; }
-      .pm-fstatus.pm-err { color: #ff9494; }
-      .pm-frow { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
-      .pm-fsend { width: 38px; height: 38px; border-radius: 50%; border: none; cursor: pointer; flex: none;
-        background: linear-gradient(135deg, #ff6ec7, #ff2d78); color: #1c0f18;
-        display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 20px rgba(255,45,120,.4); }
-      .pm-fsend:disabled { opacity: .35; cursor: default; box-shadow: none; }
-      /* Short windows: the card scrolls inside the space above the pill row
-         instead of running off the top of the screen. */
-      .pm-fcard { max-height: calc(100vh - 116px); overflow-y: auto; }
-      .pm-fcard textarea { min-height: min(132px, 22vh); }
-      /* Narrow windows (side by side with the agent's window): the mock
-         button drops its label so the pill row still fits. */
-      @media (max-width: 560px) {
-        .pm-mock-btn { width: 46px; padding: 0; justify-content: center; }
-        .pm-mock-btn span:last-child { display: none; }
-      }
       .pm-hoverbox { position: fixed; pointer-events: none; z-index: 2147483646;
         border: 2px dashed #ff3d92; background: rgba(255,61,146,.08); display: none; }
       .pm-hoverbadge { position: fixed; pointer-events: none; z-index: 2147483646; display: none;
@@ -851,20 +871,6 @@
         <span class="pm-label">Let's Page Bend</span>
       </button>
       <button class="pm-section-btn" id="pm-section" title="Capture just a section — click, then hover and click an element on the page">${SELECT_ICON}</button>
-      <button class="pm-mock-btn" id="pm-mock" title="Mock a feature in this product's own look">
-        <span class="pm-sparkle">${SPARKLES}</span><span>Mock a feature</span>
-      </button>
-    </div>
-    <div class="pm-fcard" id="pm-fcard" role="dialog" aria-label="Mock a feature">
-      <button class="pm-fcard-close" id="pm-fcard-close" title="Close (Esc)">&times;</button>
-      <p class="pm-fcard-title">What feature should we mock?</p>
-      <div class="pm-env" id="pm-env"></div>
-      <textarea id="pm-idea" rows="6" spellcheck="false"
-        placeholder="Paste a PRD or describe the feature… (Cmd/Ctrl+Enter to send)"></textarea>
-      <div class="pm-fstatus" id="pm-fstatus"></div>
-      <div class="pm-frow">
-        <button class="pm-fsend" id="pm-fsend" title="Mock it" disabled>${ARROW_RIGHT}</button>
-      </div>
     </div>
     <div class="pm-status" id="pm-status"></div>
     <div class="pm-hoverbox" id="pm-hoverbox"></div>
@@ -964,179 +970,6 @@
   }
 
   captureBtn.addEventListener("click", () => runCapture(document.body));
-
-  // ---------- "Mock a feature" card ----------
-  // Same card as the mock editor's prompt box, larger, because a pasted PRD
-  // is long. Its first line says which running copy of the product the agent
-  // will explore (see server/environments.js): the server finds it, this
-  // only shows it and lets the user change it or sign in.
-  const mockBtn = shadow.querySelector("#pm-mock");
-  const fcard = shadow.querySelector("#pm-fcard");
-  const envEl = shadow.querySelector("#pm-env");
-  const ideaEl = shadow.querySelector("#pm-idea");
-  const fstatus = shadow.querySelector("#pm-fstatus");
-  const fsend = shadow.querySelector("#pm-fsend");
-  let envState = null; // last /environments answer
-  let envShown = null; // the answer the env line last drew, to skip no-op redraws
-  let signInPoll = null;
-
-  const cardRequest = (method, path, body) => send({ type: "PM_CARD_REQUEST", method, path, body }, 90000);
-
-  function setFStatus(text, isError) {
-    fstatus.textContent = text || "";
-    fstatus.classList.toggle("pm-err", !!isError);
-  }
-
-  function formatExpiry(ms) {
-    if (!ms) return "";
-    return "expires " + new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short" });
-  }
-
-  function updateSend() {
-    const ready = !!(envState && envState.ok && envState.pick && envState.pick.signedIn !== false);
-    fsend.disabled = !(ready && ideaEl.value.trim());
-  }
-
-  function setEnvLine(text) {
-    envEl.innerHTML = `<span class="pm-env-dot"></span><span>${escapeHtml(text)}</span>`;
-  }
-
-  function renderEnv() {
-    envEl.classList.remove("pm-ready", "pm-warn");
-    clearInterval(signInPoll);
-    signInPoll = null;
-    const st = envState;
-    envShown = JSON.stringify(st);
-    if (!st) {
-      setEnvLine("Finding a copy to explore…");
-      return updateSend();
-    }
-    if (!st.ok) {
-      envEl.classList.add("pm-warn");
-      setEnvLine(st.error || "Couldn't find a copy to explore.");
-      return updateSend();
-    }
-    const label = st.label || st.product;
-    const pick = st.pick;
-    const parts = [];
-    if (!pick) {
-      envEl.classList.add("pm-warn");
-      envEl.innerHTML = `<span class="pm-env-dot"></span><span>No running ${escapeHtml(label)} copy right now. Start one in your environment service, or continue look-only on this page.</span>`;
-    } else if (pick.signedIn === false) {
-      envEl.classList.add("pm-warn");
-      envEl.innerHTML = `<span class="pm-env-dot"></span><span>Sign in to <b>${escapeHtml(pick.env)}</b> once, then come back here.</span>
-        <a href="https://${escapeHtml(pick.host)}/" target="_blank" rel="noopener">Open ${escapeHtml(pick.env)}</a>`;
-      // Carries on by itself once the sign-in lands.
-      signInPoll = setInterval(() => loadEnv({ quiet: true }), 5000);
-    } else {
-      envEl.classList.add("pm-ready");
-      if (st.source === "current-page") {
-        parts.push(`<span>Exploring this copy, <b>${escapeHtml(pick.env)}</b>.</span>`);
-      } else {
-        const meta = [pick.team, formatExpiry(pick.expiresAt)].filter(Boolean).join(" · ");
-        parts.push(`<span>Exploring <b>${escapeHtml(pick.env)}</b>${meta ? ` (${escapeHtml(meta)})` : ""}.</span>`);
-      }
-      if (pick.signedIn == null) {
-        // The worker is often just starting (a reload or server restart), so
-        // look again shortly rather than leave the warning up.
-        signInPoll = setInterval(() => loadEnv({ quiet: true }), 5000);
-        parts.push(pick.signInCheck === "worker-down"
-          ? `<span>Sign-in not checked: Page Bender's agent worker isn't running.</span>`
-          : `<span>Couldn't check sign-in: ${escapeHtml(pick.env)} didn't answer.</span>`);
-      }
-      envEl.innerHTML = `<span class="pm-env-dot"></span>${parts.join(" ")}`;
-    }
-    if (st.source === "service" && st.candidates && st.candidates.length > 1) {
-      const change = document.createElement("button");
-      change.className = "pm-link";
-      change.textContent = "Change";
-      change.addEventListener("click", () => showPicker(change));
-      envEl.appendChild(change);
-    }
-    if (st.service && st.service.status === "auth-expired") {
-      const note = document.createElement("span");
-      note.className = "pm-env-note";
-      note.textContent = "This list may be out of date: the environment service needs signing in again (run /mcp in Claude Code).";
-      envEl.appendChild(note);
-    }
-    updateSend();
-  }
-
-  function showPicker(changeLink) {
-    const select = document.createElement("select");
-    for (const c of envState.candidates) {
-      const opt = document.createElement("option");
-      opt.value = c.env;
-      opt.textContent = [c.env, c.owner, c.team, formatExpiry(c.expiresAt)].filter(Boolean).join(" · ");
-      if (envState.pick && c.env === envState.pick.env) opt.selected = true;
-      select.appendChild(opt);
-    }
-    select.addEventListener("change", async () => {
-      select.disabled = true;
-      await cardRequest("POST", "/environments/choose", { product: envState.product, env: select.value });
-      loadEnv();
-    });
-    changeLink.replaceWith(select);
-    select.focus();
-  }
-
-  async function loadEnv({ quiet = false } = {}) {
-    if (!quiet) { envState = null; renderEnv(); }
-    try {
-      const st = await cardRequest("GET", `/environments?url=${encodeURIComponent(location.href)}`);
-      envState = st && typeof st.ok === "boolean" ? st : { ok: false, error: (st && st.error) || "no answer from Page Bender's server" };
-    } catch (err) {
-      envState = { ok: false, error: `Page Bender's server isn't answering (${(err && err.message) || err})` };
-    }
-    // A quiet re-check only redraws when something changed, so an open
-    // picker isn't torn down every five seconds for nothing.
-    if (quiet && JSON.stringify(envState) === envShown) return;
-    renderEnv();
-  }
-
-  function openCard() {
-    fcard.classList.add("pm-open");
-    mockBtn.classList.add("pm-on");
-    ideaEl.focus();
-    loadEnv();
-  }
-
-  function closeCard() {
-    fcard.classList.remove("pm-open");
-    mockBtn.classList.remove("pm-on");
-    clearInterval(signInPoll);
-    signInPoll = null;
-  }
-
-  async function startMock() {
-    if (fsend.disabled) return;
-    fsend.disabled = true;
-    setFStatus("Starting…");
-    try {
-      const r = await cardRequest("POST", "/feature/start", {
-        product: envState.product, env: envState.pick.env, host: envState.pick.host,
-        idea: ideaEl.value.trim(), pageUrl: location.href, title: document.title,
-      });
-      if (r && r.ok) setFStatus("Started.");
-      else setFStatus(r && r.error ? r.error : "Couldn't start.", true);
-    } catch (err) {
-      setFStatus(`Couldn't start: ${(err && err.message) || err}`, true);
-    } finally {
-      updateSend();
-    }
-  }
-
-  mockBtn.addEventListener("click", () => (fcard.classList.contains("pm-open") ? closeCard() : openCard()));
-  shadow.querySelector("#pm-fcard-close").addEventListener("click", closeCard);
-  ideaEl.addEventListener("input", updateSend);
-  fsend.addEventListener("click", startMock);
-  // Keys typed in the card stay in the card: the product page's own
-  // shortcuts must not fire while someone is typing a PRD.
-  fcard.addEventListener("keydown", (e) => {
-    e.stopPropagation();
-    if (e.key === "Escape") closeCard();
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); startMock(); }
-  });
 
   // ---------- section-select mode (hover-highlight, click to arm an
   // element, click it again to confirm — capture only fires on that second,

@@ -244,6 +244,9 @@ function rank(a, b) {
 // before routing, so those mean signed out and any other real answer means
 // past the wall: a missing route answers 404 only once signed in. null means
 // no answer at all, with the reason.
+// How many other copies to check for an existing sign-in before asking for one.
+const SIGN_IN_SCAN = 8;
+
 async function checkSignIn(product, host, fetchThroughBrowser) {
   const r = await fetchThroughBrowser(`https://${host}${product.authProbePath || "/"}`);
   if (!r || r.workerDown) return { signedIn: null, signInCheck: r && r.workerDown ? "worker-down" : "no-answer" };
@@ -282,10 +285,18 @@ export async function findEnvironment({ productKey, pageUrl, force, fetchThrough
   const alive = await Promise.all(described.map(async (c) => ((await answers(c.host)) ? c : null)));
   const candidates = alive.filter(Boolean).sort(rank);
 
-  // The remembered choice wins while it is still usable.
+  // The remembered choice wins while it is still usable. Otherwise, and when
+  // the user isn't signed in to it, a copy they are already signed in to
+  // beats a better-ranked one: sign-ins are per copy, and asking for one is
+  // the costliest step.
   const remembered = readJson(CHOICE_FILE, {})[key];
-  const pick = candidates.find((c) => c.env === remembered) || candidates[0] || null;
+  let pick = candidates.find((c) => c.env === remembered) || candidates[0] || null;
   if (pick) Object.assign(pick, await checkSignIn(product, pick.host, fetchThroughBrowser));
+  if (pick && pick.signedIn === false) {
+    const others = candidates.filter((c) => c !== pick).slice(0, SIGN_IN_SCAN);
+    const checked = await Promise.all(others.map(async (c) => Object.assign(c, await checkSignIn(product, c.host, fetchThroughBrowser))));
+    pick = checked.find((c) => c.signedIn === true) || pick;
+  }
 
   return {
     ok: true, product: key, label: product.label, source: "service",

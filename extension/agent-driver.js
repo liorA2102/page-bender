@@ -99,6 +99,12 @@
     if (document.querySelector("[aria-busy=true]")) return true;
     const candidates = document.querySelectorAll(".spinner, .loading, .loader, [class*=spinner], [class*=loading]");
     for (const el of candidates) if (isVisible(el)) return true;
+    // Progress bars and skeletons animate in CSS alone, so the page goes
+    // "quiet" while they still run (CMS's Material UI grids load this way).
+    // An indeterminate progress bar has no aria-valuenow; a toast's countdown
+    // bar is not loading.
+    const busy = document.querySelectorAll("[role=progressbar]:not([aria-valuenow]), [class*=Indeterminate], [class*=indeterminate], [class*=skeleton], [class*=Skeleton], .ant-spin-spinning");
+    for (const el of busy) if (!el.closest("[class*=Toastify], [class*=toast]") && isVisible(el)) return true;
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(), i = 0; n && i < 5000; n = walker.nextNode(), i++) {
       if (LOADING.test(n.nodeValue) && n.parentElement && isVisible(n.parentElement)) return true;

@@ -21,6 +21,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createTwoFilesPatch } from "diff";
+import { startQuickLearn, quickLearnState } from "./quick-learn.js";
+import { pageHeader, pageOutline, screensIn } from "./outline.js";
+import { designSystemParts } from "./ds-parts.js";
 import { findEnvironment, rememberChoice, readConfig as readEnvironmentsConfig, refreshList as refreshEnvironmentList } from "./environments.js";
 
 const PORT = 8790;
@@ -275,6 +278,9 @@ async function handleCapture(req, res) {
   if (screenshot) fs.writeFileSync(path.join(dir, SCREENSHOT_FILE), screenshot, "utf8");
 
   sendJson(res, 200, { slug, previewUrl: `http://${HOST}:${PORT}/mock/${slug}/${WORKING_FILE}` });
+  // While the user looks at the copy, learn the product it came from, so
+  // their first prompt already has the design system behind it.
+  productForMock(dir).then(startQuickLearnFor).catch((err) => console.warn(`[capture] product lookup failed: ${err.message}`));
 }
 
 // ---------- agent capture ----------
@@ -641,7 +647,36 @@ const STEP_LABELS = {
   WebFetch: "fetching a reference",
 };
 
-async function runAgentTurn({ dir, slug, instruction, selection, images, resumeSessionId, systemPrompt = QUALITY_SYSTEM_PROMPT, maxTurns = 60 }) {
+// A feature run spends most of its time in the Page Bender CLI, which would
+// otherwise all read as one "inspecting the page".
+const PB_STEP_LABELS = {
+  health: "checking the browser",
+  open: "opening a page",
+  navigate: "opening a page",
+  back: "opening a page",
+  click: "clicking through the product",
+  hover: "clicking through the product",
+  escape: "clicking through the product",
+  scroll: "reading the page",
+  snapshot: "reading the page",
+  styles: "measuring the styles",
+  capture: "capturing a part",
+  fetch: "reading data",
+  close: "tidying up tabs",
+};
+
+function stepLabel(block) {
+  if (block.name === "Bash") {
+    const command = String(block.input?.command || "");
+    const pb = command.match(/pb\.mjs\s+(\w+)/);
+    if (pb && PB_STEP_LABELS[pb[1]]) return PB_STEP_LABELS[pb[1]];
+    if (/ds-(pack|catalog)\.py/.test(command)) return "assembling the design system";
+    if (/ds-mock-kit\.py/.test(command)) return "assembling the mock";
+  }
+  return STEP_LABELS[block.name] || block.name;
+}
+
+async function runAgentTurn({ dir, slug, instruction, selection, images, resumeSessionId, systemPrompt = QUALITY_SYSTEM_PROMPT, maxTurns = 60, rawPrompt = null, cwd = null }) {
   const filePath = path.join(dir, WORKING_FILE);
   const imagePaths = writeTempImages(dir, images);
   const imageNote = imagePaths.length
@@ -658,7 +693,9 @@ async function runAgentTurn({ dir, slug, instruction, selection, images, resumeS
     // function's to solve — just skip these and let the agent's own
     // Read call surface whatever's actually wrong.
   }
-  const prompt = `The mock file to edit is at exactly this path: ${filePath}\n\n${buildPromptText(instruction, selection, locationHint, styleCatalog)}${imageNote}`;
+  // A design-system run (handleDesignSystemGenerate) brings its own prompt:
+  // there is no mock file to edit.
+  const prompt = rawPrompt ?? `The mock file to edit is at exactly this path: ${filePath}\n\n${buildPromptText(instruction, selection, locationHint, styleCatalog)}${imageNote}`;
 
   let sessionId = null;
   const toolCalls = [];
@@ -688,7 +725,7 @@ async function runAgentTurn({ dir, slug, instruction, selection, images, resumeS
     q = query({
       prompt,
       options: {
-        cwd: dir,
+        cwd: cwd || dir,
         systemPrompt,
         // Full tool access, no allowedTools/disallowedTools list, no
         // canUseTool veto — an explicit, discussed product decision (see
@@ -719,11 +756,11 @@ async function runAgentTurn({ dir, slug, instruction, selection, images, resumeS
       if (msg.type === "assistant" && Array.isArray(msg.message?.content)) {
         let lastTool = null;
         for (const block of msg.message.content) {
-          if (block.type === "tool_use") { toolCalls.push(block.name); lastTool = block.name; }
+          if (block.type === "tool_use") { toolCalls.push(block.name); lastTool = block; }
         }
         // No tool call in an assistant message means it is reasoning or
         // writing its reply, which is worth showing as its own state.
-        setStep(lastTool ? (STEP_LABELS[lastTool] || lastTool) : "thinking");
+        setStep(lastTool ? stepLabel(lastTool) : "thinking");
       }
       if (msg.type === "result") {
         resultText = msg.result || (msg.errors && msg.errors.join("; ")) || null;
@@ -753,7 +790,7 @@ async function runAgentTurn({ dir, slug, instruction, selection, images, resumeS
     const isStaleSession = resumeSessionId && !/maximum number of turns/i.test(err.message || "");
     if (isStaleSession) {
       console.warn(`[prompt] resume failed (${err.message}) — retrying fresh`);
-      return runAgentTurn({ dir, slug, instruction, selection, images, resumeSessionId: null, systemPrompt, maxTurns });
+      return runAgentTurn({ dir, slug, instruction, selection, images, resumeSessionId: null, systemPrompt, maxTurns, rawPrompt, cwd });
     }
     if (slug) activeQueries.set(slug, { query: q, status: "failed", startedAt, resultText });
     // Attach whatever we saw before the failure — a caller logging just
@@ -933,13 +970,24 @@ async function handlePrompt(req, res) {
   }
 
   const t0 = Date.now();
+  if (!(await waitForQuickLearn(dir, slug))) {
+    return sendJson(res, 200, { html: fs.readFileSync(path.join(dir, WORKING_FILE), "utf8"), sessionId: resumeSessionId || null, cancelled: true, elapsedMs: Date.now() - t0 });
+  }
+  const dsPrompt = outlinePrompt(dir) + designSystemPrompt(dir, slug);
   console.log(`[prompt] ${slug} resume=${resumeSessionId || "no (new session)"} images=${(images || []).length} instr=${JSON.stringify(instruction).slice(0, 100)}`);
   try {
-    const { sessionId, toolCalls, resultText, totalCostUsd, usage, numTurns } = await runAgentTurn({ dir, slug, instruction, selection, images, resumeSessionId });
+    const { sessionId, toolCalls, resultText, totalCostUsd, usage, numTurns } = await runAgentTurn({
+      dir, slug, instruction, selection, images, resumeSessionId,
+      ...(dsPrompt ? { systemPrompt: QUALITY_SYSTEM_PROMPT + dsPrompt, maxTurns: DS_EDIT_MAX_TURNS } : {}),
+    });
     const html = fs.readFileSync(path.join(dir, WORKING_FILE), "utf8");
     console.log(`[prompt] done in ${Date.now() - t0}ms toolCalls=${toolCalls.length} (${toolCalls.join(",")}) session=${sessionId || "none"} ${formatCostLine(totalCostUsd, usage, numTurns)}`);
     if (resultText) console.log(`[prompt] summary: ${resultText}`);
-    sendJson(res, 200, { html, sessionId, elapsedMs: Date.now() - t0, totalTokens: totalTokenCount(usage) });
+    const question = takeQuestion(dir);
+    sendJson(res, 200, {
+      html, sessionId, elapsedMs: Date.now() - t0, totalTokens: totalTokenCount(usage),
+      question: question && { ...question, boardUrl: question.board ? `/mock/${slug}/${question.board}` : null },
+    });
   } catch (err) {
     // Same distinction runFidelityPass's catch block already makes: a
     // deliberate /agent-cancel (user hit Stop/Escape) surfaces here as the
@@ -1239,14 +1287,321 @@ async function handleEnvironmentChoose(req, res) {
   sendJson(res, 200, { ok: true });
 }
 
-// Mocking a feature from the card. The hosted agent run is the next part of
-// the build; until then the card gets a plain answer instead of a dead end.
-async function handleFeatureStart(req, res) {
-  if (!agentHeaderOk(req, res)) return;
-  const body = JSON.parse((await readBody(req)) || "{}");
-  if (!body.idea || !body.product) return sendJson(res, 400, { ok: false, error: "pass product and idea" });
-  console.log(`[feature] start asked for ${body.product} on ${body.env || "?"}: ${String(body.idea).slice(0, 80)}`);
-  sendJson(res, 501, { ok: false, error: "Mocking isn't built yet: the agent run is the next part of the build." });
+// ---------- design systems ----------
+// Every capture of a product Page Bender knows (see environments.js) gets
+// that product's design system behind it: a quick learn starts in the
+// background as soon as the page is captured, and the editor's agent builds
+// with it (designSystemPrompt). "Generate design system" in the editor runs
+// the mocker skill's job A as a hosted agent run for the full one.
+//
+// Folders live in design-systems/<product>/<YYYY-MM-DD>[-quick]/ (gitignored,
+// local only). A full one has a catalog.html; a quick learn does not.
+const DS_ROOT = path.join(REPO_ROOT, "design-systems");
+const DS_FRESH_DAYS = 30;
+const SKILL_FILE = path.join(REPO_ROOT, "skills", "page-bender-mocker", "SKILL.md");
+const QUESTION_FILE = "question.json";
+// A full design system walks about 15 pages: far more than an editor edit.
+const DS_RUN_MAX_TURNS = 200;
+// Building new screens from a PRD takes more turns than a one-element edit.
+const DS_EDIT_MAX_TURNS = 120;
+const dsJobs = new Map(); // job slug -> { product, status, error, startedAt }
+
+function designSystemInfo(product) {
+  const out = { full: null, quick: null };
+  if (!/^[a-z0-9-]+$/i.test(product || "")) return out;
+  const base = path.join(DS_ROOT, product);
+  let names = [];
+  try {
+    names = fs.readdirSync(base).filter((n) => /^\d{4}-\d{2}-\d{2}(-quick)?$/.test(n)).sort().reverse();
+  } catch {
+    return out;
+  }
+  for (const name of names) {
+    const dir = path.join(base, name);
+    const date = name.slice(0, 10);
+    const ageDays = Math.floor((Date.now() - Date.parse(date)) / 86400000);
+    if (ageDays > DS_FRESH_DAYS) continue;
+    let index = { components: [], pages: [] };
+    try { index = JSON.parse(fs.readFileSync(path.join(dir, "raw", "index.json"), "utf8")); } catch {}
+    const info = { dir, date, ageDays, components: (index.components || []).length, pages: (index.pages || []).length };
+    if (!name.endsWith("-quick") && !out.full && fs.existsSync(path.join(dir, "catalog.html"))) {
+      out.full = { ...info, url: `http://${HOST}:${PORT}/ds/${product}/${name}/catalog.html` };
+    } else if (name.endsWith("-quick") && !out.quick && fs.existsSync(path.join(dir, "README.md"))) {
+      out.quick = { ...info, url: index.pages && index.pages[0] ? `http://${HOST}:${PORT}/ds/${product}/${name}/${index.pages[0].file}` : null };
+    }
+  }
+  return out;
+}
+
+function selfCall(route, body) {
+  return fetch(`http://${HOST}:${PORT}${route}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Page-Bender-Agent": "1" },
+    body: JSON.stringify(body),
+  }).then(async (r) => {
+    const data = await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+    if (!data.ok) throw new Error(data.error || `${route} failed`);
+    return data;
+  });
+}
+
+// Which product a mock belongs to, and the running copy to learn it from.
+// Remembered in meta.json; the copy is looked up again when it is needed,
+// since copies come and go daily.
+async function productForMock(dir) {
+  const meta = readMeta(dir);
+  if (meta.product === null) return null; // looked up before: not a known product
+  const env = await findEnvironment({ productKey: meta.product, pageUrl: meta.url, fetchThroughBrowser });
+  if (!env.ok) {
+    if (!meta.product) writeMetaPatch(dir, { product: null });
+    return null;
+  }
+  if (!meta.product) writeMetaPatch(dir, { product: env.product, productLabel: env.label });
+  return { product: env.product, label: env.label, pick: env.pick, serviceStatus: env.service?.status || null };
+}
+
+function startQuickLearnFor(found) {
+  if (!found || !found.pick || found.pick.signedIn !== true) return;
+  const info = designSystemInfo(found.product);
+  if (info.full || (info.quick && info.quick.ageDays === 0)) return;
+  startQuickLearn({
+    product: found.product,
+    host: found.pick.host,
+    pageUrl: null,
+    repoRoot: REPO_ROOT,
+    mocksDir: MOCKS_DIR,
+    call: selfCall,
+    workerReady: () => Date.now() - agentLastPollAt < AGENT_WORKER_STALE_MS,
+  });
+}
+
+// What the editor shows about this mock's design system, starting the quick
+// learn when it can (right after a capture, or once the user has signed in
+// to the copy).
+async function handleDesignSystemEnsure(req, res) {
+  const { slug } = JSON.parse((await readBody(req)) || "{}");
+  const dir = resolveProjectDir(slug);
+  const found = await productForMock(dir);
+  if (!found) return sendJson(res, 200, { ok: true, product: null });
+  startQuickLearnFor(found);
+  const info = designSystemInfo(found.product);
+  const learning = quickLearnState(found.product);
+  const job = [...dsJobs.entries()].reverse().find(([, j]) => j.product === found.product && (j.status === "running" || Date.now() - (j.finishedAt || 0) < 60000));
+  const entry = job && activeQueries.get(job[0]);
+  sendJson(res, 200, {
+    ok: true,
+    product: found.product,
+    label: found.label,
+    full: info.full && { date: info.full.date, components: info.full.components, url: info.full.url },
+    quick: info.quick && { date: info.quick.date, pages: info.quick.pages, url: info.quick.url },
+    learning: learning && learning.status === "running" ? { done: learning.done, total: learning.total } : null,
+    learnError: learning && learning.status === "failed" ? learning.error : null,
+    // A copy to learn from, or what is missing: none running, or not signed in.
+    copy: !found.pick ? "none" : found.pick.signedIn === false ? "sign-in" : "ok",
+    signInUrl: found.pick && found.pick.signedIn === false ? `https://${found.pick.host}/` : null,
+    serviceExpired: found.serviceStatus === "auth-expired",
+    generating: job ? { job: job[0], status: entry && entry.status === "running" ? "running" : job[1].status, step: entry && entry.status === "running" ? entry.step : null, elapsedMs: Date.now() - job[1].startedAt, error: job[1].error || null } : null,
+  });
+}
+
+// "Generate design system": the mocker skill's job A, as a hosted run.
+async function handleDesignSystemGenerate(req, res) {
+  const { slug } = JSON.parse((await readBody(req)) || "{}");
+  const found = await productForMock(resolveProjectDir(slug));
+  if (!found) return sendJson(res, 400, { ok: false, error: "This page isn't a product Page Bender knows yet." });
+  if (!found.pick || found.pick.signedIn !== true) return sendJson(res, 409, { ok: false, error: "Sign in to a running copy of the product first." });
+  for (const [, j] of dsJobs) if (j.product === found.product && j.status === "running") return sendJson(res, 409, { ok: false, error: "Already generating." });
+  const jobSlug = slugify(`design system ${found.product}`);
+  const dir = resolveProjectDir(jobSlug);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "meta.json"), JSON.stringify({ title: `Design system: ${found.label}`, kind: "design-system", product: found.product, capturedAt: new Date().toISOString(), fidelityStarted: true }, null, 2));
+  const job = { product: found.product, status: "running", error: null, startedAt: Date.now() };
+  dsJobs.set(jobSlug, job);
+  const skill = fs.readFileSync(SKILL_FILE, "utf8").replace(/^---[\s\S]*?\n---\n/, "");
+  const quick = designSystemInfo(found.product).quick;
+  const hosted = `
+
+# Running inside Page Bender (overrides the skill where they differ)
+
+You were started from Page Bender's editor, not from a chat: nobody reads your replies. Your whole
+job is A, the full design system for ${found.label}. Explore only https://${found.pick.host}/ (non-prod;
+the user is signed in there). Your working directory is ${REPO_ROOT}; run the CLI as
+\`node agent/pb.mjs ...\`. Write the folder to design-systems/${found.product}/<today, YYYY-MM-DD>/
+and finish with its catalog.html. Do not ask anything and do not run B.${quick ? ` A quick learn exists at ${quick.dir}: reuse its pages instead of revisiting them.` : ""}
+Never publish or commit anything.
+`;
+  console.log(`[design-system] generate ${found.product} on ${found.pick.host} (${jobSlug})`);
+  runAgentTurn({ dir, slug: jobSlug, cwd: REPO_ROOT, rawPrompt: `Build the full design system for ${found.label} (job A).`, systemPrompt: { type: "preset", preset: "claude_code", append: skill + hosted }, maxTurns: DS_RUN_MAX_TURNS })
+    .then((result) => {
+      const full = designSystemInfo(found.product).full;
+      const fresh = full && fs.statSync(path.join(full.dir, "catalog.html")).mtimeMs >= job.startedAt;
+      job.status = fresh ? "done" : "failed";
+      if (!fresh) job.error = `It ended without a new catalog${result.resultText ? `: ${String(result.resultText).slice(0, 300)}` : "."}`;
+      console.log(`[design-system] ${found.product} ${job.status} after ${result.numTurns ?? "?"} turns, $${result.totalCostUsd?.toFixed?.(2) ?? "?"}`);
+    })
+    .catch((err) => {
+      job.status = err.cancelled ? "cancelled" : "failed";
+      job.error = err.cancelled ? "Stopped." : err.message;
+      console.error(`[design-system] ${found.product} ${job.status}: ${err.message}`);
+    })
+    .finally(() => { job.finishedAt = Date.now(); });
+  sendJson(res, 200, { ok: true, job: jobSlug });
+}
+
+// The editor's agent builds with the product's design system, and may add
+// whole screens inside the product's own shell. Empty when the mock is not a
+// known product or no design system exists yet.
+function designSystemPrompt(dir, slug) {
+  const meta = readMeta(dir);
+  if (!meta.product) return "";
+  const info = designSystemInfo(meta.product);
+  const ds = info.full || info.quick;
+  if (!ds) return "";
+  const label = meta.productLabel || meta.product;
+  const what = info.full
+    ? `a full design system at ${ds.dir}: tokens.json and tokens.css (measured values), components/index.md and components/*.html (real component captures with their class names), shell.html, and README.md (which names the visual families; keep each screen to one).`
+    : `a quick design system at ${ds.dir}: full-page captures in pages/*.html and each page's style census in raw/styles-<page>.json (no tokens.json yet: the most-used value in a group is the system value).`;
+  // The small summary files go in whole, so the agent doesn't spend its
+  // turns finding them (a first real run spent about 45 shell calls
+  // exploring, 4 Oct 2026). Component captures stay on disk: open one only
+  // to reuse its markup.
+  const readSmall = (f, max = 16000) => {
+    try {
+      const t = fs.readFileSync(path.join(ds.dir, f), "utf8");
+      return t.length <= max ? t : null;
+    } catch {
+      return null;
+    }
+  };
+  let index = { components: [], pages: [] };
+  try { index = JSON.parse(fs.readFileSync(path.join(ds.dir, "raw", "index.json"), "utf8")); } catch {}
+  const summary = [
+    readSmall("README.md") && `--- README.md ---\n${readSmall("README.md")}`,
+    readSmall("tokens.css") && `--- tokens.css ---\n${readSmall("tokens.css")}`,
+    ...partsFor(ds.dir, index.components, dir),
+    index.pages.length && `--- page captures (file, family) ---\n${index.pages.map((pg) => `${pg.file} | ${pg.family || "-"} | ${pg.page}`).join("\n")}`,
+  ].filter(Boolean).join("\n\n");
+  return `
+
+THIS PRODUCT'S DESIGN SYSTEM: this page is a capture of ${label}, and Page Bender holds ${what}
+When you add or change UI, take colours, type, radii and spacing from it, and reuse real markup and
+class names. The design system's parts are below as ready-to-copy markup from anywhere in the
+product, each wrapped in the ancestors its rules are scoped to (keep those wrappers). Their CSS is
+added for you (see NEW SCREENS). Copy from the parts instead of searching. Build each new screen
+from one family where you can, and prefer the richest part of a kind (a table that already shows
+status pills over a plain one).
+
+WORK FAST: the user is waiting. The outline and the parts answer most "where" and "what does it
+look like" questions, so search only for what they don't. Write the new markup in as few edits as
+you can. Afterwards run at most one combined check that the change landed; don't count rows,
+re-read what you wrote, or verify styling by grepping. Never invent a
+style the product doesn't have. A component the request needs that exists in neither is designed
+in the product's language from the closest real one. Read only the files you need; they are large.
+
+NEW SCREENS: a request may need screens this page doesn't have. They live inside this product's
+shell (its navigation and header stay). Make one in exactly two steps:
+1. Write the whole screen's markup, in one Write, to ${path.join(dir, "screen-<name>.html")}: compose
+   it from the parts below (page header, buttons, table, pills...), copying their markup and
+   changing only the text, columns and rows. Keep each part's wrappers and classes as they are.
+   For a table, repeat the part's row markup for your rows. Add no <style>: it isn't needed.
+2. Place it with one command, which also adds the CSS every part you used needs and wires the
+   product's own navigation to it:
+   node ${path.join(REPO_ROOT, "agent", "pb-screens.mjs")} screen ${path.join(dir, WORKING_FILE)} ${ds.dir} "<Name>" ${path.join(dir, "screen-<name>.html")} --nav-after "<a top-level nav label, never one inside a collapsed group>"
+   (or --nav "<label>" to make an existing nav item open it). The existing page keeps its own
+   name, read from its title, and its nav item switches back to it.
+That is the whole job for a new screen: no searching, no reading the file back. To change a screen
+later, edit its section in place. To use a part on an existing screen, add its CSS first with
+   node ${path.join(REPO_ROOT, "agent", "pb-screens.mjs")} css ${path.join(dir, WORKING_FILE)} ${ds.dir} <part name>
+Never delete a screen the user didn't ask to remove.
+
+ASKING: for a PRD or a request that spans several screens, first propose the screen list and wait.
+When a part has no counterpart in the product and its shape is a real choice (a stepper, an
+editor, an allocation control), offer two or three concepts on one board, concepts-<topic>.html in
+${dir}, in the product's visual language. To ask, write ${path.join(dir, QUESTION_FILE)} as
+{"question": "...", "options": ["...", "..."], "board": "concepts-<topic>.html" or null}
+and end your turn at once with one line. The answer arrives as the next message. Small edits never
+need a question.
+
+DESIGN SYSTEM SUMMARY (${ds.dir}):
+${summary}`;
+}
+
+// Where the page's navigation, header and main content area sit right now,
+// from the landmarks the capture marked. Empty for captures made before
+// landmarks existed, or for section captures.
+function outlinePrompt(dir) {
+  let html;
+  try { html = fs.readFileSync(path.join(dir, WORKING_FILE), "utf8"); } catch { return ""; }
+  const outline = pageOutline(html);
+  if (!outline) return "";
+  const lines = outline.map((l) => `- ${l.role}: <${l.tag}> at line ${l.line}, character offset ${l.offset}, ${l.length} characters long. Opening tag (unique in the file): ${l.openTag}${l.labels ? `\n  its items: ${l.labels.join(" | ")}` : ""}`);
+  const screens = screensIn(html);
+  return `
+
+PAGE OUTLINE: the capture marked this page's landmarks with data-pb-landmark (unique in the file),
+so start here instead of searching. To read inside one, slice by offset (for example
+python3 -c "print(open(FILE).read()[OFFSET:OFFSET+3000])") rather than grepping whole lines.
+${lines.join("\n")}${screens.length ? `\nScreens in this mock: ${screens.join(", ")}.` : ""}`;
+}
+
+// The design system's parts as ready-to-use markup, each marked with
+// whether this page already styles it or needs its CSS added
+// (pb-screens.mjs css), so parts from any page of the product can be used.
+function partsFor(dsDir, components, dir) {
+  let header = null;
+  try { header = pageHeader(fs.readFileSync(path.join(dir, WORKING_FILE), "utf8")); } catch {}
+  // With this page's own header on offer, other pages' headers are left out:
+  // one may lay its actions out differently, and given the choice an agent
+  // picked one in two runs of three (4 Oct 2026).
+  const parts = designSystemParts(dsDir, components).filter((pt) => !(header && /header/i.test(pt.name)));
+  return [
+    header && `--- part: this-page-header (THIS page's own header: start every new screen with it, changing only the title and the buttons) ---\n${header}`,
+  ].filter(Boolean).concat(parts.map((pt) => pt.markup
+    ? `--- part: ${pt.name} (${pt.family || "-"} family, from ${pt.page || "?"}) ---\n${pt.markup}`
+    : `--- part: ${pt.name} (from ${pt.page || "?"}): too large to list (${pt.size} characters); open ${path.join(dsDir, pt.file)} only if you need it ---`));
+}
+
+// Called when the editor sends a prompt: a quick learn under way finishes
+// first (about a minute), so the agent builds with it.
+async function waitForQuickLearn(dir, slug) {
+  const product = readMeta(dir).product;
+  const state = product && quickLearnState(product);
+  if (!state || state.status !== "running") return true;
+  let stopped = false;
+  const label = readMeta(dir).productLabel || product;
+  const entry = { query: { close: () => { stopped = true; } }, status: "running", startedAt: Date.now(), resultText: null, step: `learning ${label}`, toolCount: 0 };
+  activeQueries.set(slug, entry);
+  while (state.status === "running" && !stopped) {
+    entry.step = `learning ${label}: ${state.done} of ${state.total} pages`;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  activeQueries.delete(slug);
+  return !stopped;
+}
+
+function takeQuestion(dir) {
+  const file = path.join(dir, QUESTION_FILE);
+  if (!fs.existsSync(file)) return null;
+  let q;
+  try {
+    q = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    q = { question: fs.readFileSync(file, "utf8") };
+  }
+  fs.unlinkSync(file);
+  return { question: String(q.question || ""), options: Array.isArray(q.options) ? q.options.map(String) : [], board: q.board ? path.basename(String(q.board)) : null };
+}
+
+// Design-system files for the editor's link, served to this machine only.
+function serveDesignSystem(req, res, rel) {
+  const filePath = path.resolve(DS_ROOT, rel);
+  if (!fs.existsSync(DS_ROOT) || !filePath.startsWith(fs.realpathSync(DS_ROOT) + path.sep)) return notFound(res);
+  fs.readFile(filePath, (err, data) => {
+    if (err) return notFound(res);
+    const type = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml", ".json": "application/json", ".woff2": "font/woff2", ".js": "text/javascript" }[path.extname(filePath)];
+    res.writeHead(200, { "Content-Type": type || "application/octet-stream" });
+    res.end(data);
+  });
 }
 
 function sendJson(res, status, obj) {
@@ -1375,8 +1730,14 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && url.pathname === "/environments/choose") {
     return handleEnvironmentChoose(req, res).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
   }
-  if (req.method === "POST" && url.pathname === "/feature/start") {
-    return handleFeatureStart(req, res).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
+  if (req.method === "POST" && url.pathname === "/design-system/ensure") {
+    return handleDesignSystemEnsure(req, res).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
+  }
+  if (req.method === "POST" && url.pathname === "/design-system/generate") {
+    return handleDesignSystemGenerate(req, res).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
+  }
+  if (req.method === "GET" && url.pathname.startsWith("/ds/")) {
+    return serveDesignSystem(req, res, decodeURIComponent(url.pathname.slice(4)));
   }
   if (req.method === "POST" && url.pathname === "/prompt") {
     return handlePrompt(req, res).catch((err) => sendJson(res, 500, { error: err.message }));

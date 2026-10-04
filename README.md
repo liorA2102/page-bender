@@ -13,7 +13,10 @@ A Chrome extension (capture + in-page toolbar) plus a local Node server
    DOM and copies the page's real CSS/fonts into one file. No auth, no live
    JS — the frozen copy has no dependency on the original site once made.
 2. **Prototype** — describe a change in plain language in the mock's
-   toolbar. Claude edits the markup directly, in place.
+   toolbar. Claude edits the markup directly, in place. For a product Page
+   Bender knows, it learns that product's design system in the background
+   while you look at the copy, so new parts, and whole new screens inside
+   the product's own navigation, come out in the product's look.
 3. **Export** — pull a diff for handoff, or download the finished HTML on
    its own.
 
@@ -63,10 +66,12 @@ git pull
 ```
 (then remove the extension from `chrome://extensions` manually)
 
-### Exploring a one-click copy (optional)
+### Learning a product's design system (optional)
 
-Page Bender can find a running non-prod copy of a product for its agent to
-explore, instead of the page you're on. It asks your team's one-click
+Page Bender can find a running non-prod copy of a product and learn its
+design system there: a quick learn of a few pages after every capture, and a
+full one from "Generate design system" in the editor. It drives that copy in
+background tabs of your Chrome, never prod, with every write blocked. It asks your team's one-click
 environment service through Claude Code, so that service's MCP server must be
 set up and signed in there. Copy `server/environments.example.json` to
 `server/environments.local.json` and fill in your products' host pattern (kept
