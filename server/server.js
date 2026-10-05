@@ -25,6 +25,8 @@ import { startQuickLearn, quickLearnState } from "./quick-learn.js";
 import { pageHeader, pageOutline, screensIn } from "./outline.js";
 import { designSystemParts } from "./ds-parts.js";
 import { detectLibraries, pageParts, tokenSummary } from "./page-ds.js";
+import { designMdFor } from "./design-md.js";
+import { buildHandoffZip, standaloneMock } from "./handoff.js";
 import { findEnvironment, rememberChoice, readConfig as readEnvironmentsConfig, refreshList as refreshEnvironmentList } from "./environments.js";
 
 const PORT = 8790;
@@ -267,6 +269,10 @@ async function handleCapture(req, res) {
     console.log(
       `[capture] fonts: ${fontDiagnostics.embedded} embedded, ${fontDiagnostics.rulesFound} @font-face rule(s) found, ${fontDiagnostics.sheetsSkippedCrossOrigin} stylesheet(s) unreadable (cross-origin)`
     );
+    if (fontDiagnostics.images) {
+      const im = fontDiagnostics.images;
+      console.log(`[capture] images: ${im.embedded} of ${im.found} embedded (${Math.round((im.bytes || 0) / 1024)} KB), ${im.failed} left as links`);
+    }
     if (fontDiagnostics.failures && fontDiagnostics.failures.length) {
       console.warn(`[capture] font embed failures: ${JSON.stringify(fontDiagnostics.failures)}`);
     }
@@ -1043,24 +1049,13 @@ async function handlePrompt(req, res) {
   }
 }
 
-async function handleDiff(req, res) {
-  const body = JSON.parse(await readBody(req));
-  const { slug } = body;
-  if (!slug) return sendJson(res, 400, { error: "missing slug" });
-  const dir = resolveProjectDir(slug);
-  const originalPath = path.join(dir, ORIGINAL_FILE);
-  const workingPath = path.join(dir, WORKING_FILE);
-  if (!fs.existsSync(originalPath) || !fs.existsSync(workingPath)) {
-    return sendJson(res, 404, { error: "unknown slug" });
-  }
-
-  const original = fs.readFileSync(originalPath, "utf8");
-  const working = fs.readFileSync(workingPath, "utf8");
-  const filename = friendlyDownloadName(dir, slug);
-  if (original === working) return sendJson(res, 200, { markdown: "# No changes\n\nThe mock is identical to the original capture.", filename });
-
+// CHANGES.md: what changed against the captured page, as a readable
+// changelog for whoever builds it (a small model summarises the raw diff).
+async function changesMarkdown(dir, slug) {
+  const original = fs.readFileSync(path.join(dir, ORIGINAL_FILE), "utf8");
+  const working = fs.readFileSync(path.join(dir, WORKING_FILE), "utf8");
+  if (original === working) return "# No changes\n\nThe mock is identical to the original capture.";
   const rawDiff = createTwoFilesPatch(ORIGINAL_FILE, WORKING_FILE, original, working, "before", "after");
-
   const t0 = Date.now();
   console.log(`[diff] ${slug} rawDiffBytes=${rawDiff.length}`);
   let markdown = "";
@@ -1083,7 +1078,50 @@ async function handleDiff(req, res) {
     markdown = `# Changes (raw diff — summarization failed)\n\n\`\`\`diff\n${rawDiff}\n\`\`\``;
   }
   console.log(`[diff] done in ${Date.now() - t0}ms mdBytes=${markdown.length}`);
-  sendJson(res, 200, { markdown, filename });
+  return markdown;
+}
+
+async function handleDiff(req, res) {
+  const body = JSON.parse(await readBody(req));
+  const { slug } = body;
+  if (!slug) return sendJson(res, 400, { error: "missing slug" });
+  const dir = resolveProjectDir(slug);
+  if (!fs.existsSync(path.join(dir, ORIGINAL_FILE)) || !fs.existsSync(path.join(dir, WORKING_FILE))) {
+    return sendJson(res, 404, { error: "unknown slug" });
+  }
+  sendJson(res, 200, { markdown: await changesMarkdown(dir, slug), filename: friendlyDownloadName(dir, slug) });
+}
+
+// DESIGN.md for this mock's product, on its own (also from the Design panel).
+function handleDesignMd(req, res, slug) {
+  let dir;
+  try { dir = resolveProjectDir(slug); } catch { return notFound(res); }
+  let md;
+  try { md = designMdFor(dir, { designSystemInfo }); } catch (err) { return sendJson(res, 500, { error: err.message }); }
+  res.writeHead(200, {
+    "Content-Type": "text/markdown; charset=utf-8",
+    "Content-Disposition": `attachment; filename="${friendlyDownloadName(dir, slug)}-DESIGN.md"`,
+    "Cache-Control": "no-store",
+  });
+  res.end(md);
+}
+
+// The handoff zip: mock.html (standalone), CHANGES.md, DESIGN.md, README.md.
+async function handleExportHandoff(req, res, slug) {
+  let dir;
+  try { dir = resolveProjectDir(slug); } catch { return notFound(res); }
+  if (!fs.existsSync(path.join(dir, WORKING_FILE))) return notFound(res);
+  const t0 = Date.now();
+  const baseName = friendlyDownloadName(dir, slug);
+  const [changesMd, designMd] = await Promise.all([changesMarkdown(dir, slug), Promise.resolve().then(() => designMdFor(dir, { designSystemInfo }))]);
+  const { zipPath, tmp, images } = await buildHandoffZip({ dir, meta: readMeta(dir), html: fs.readFileSync(path.join(dir, WORKING_FILE), "utf8"), changesMd, designMd, baseName });
+  console.log(`[handoff] ${slug} in ${Date.now() - t0}ms, images ${images.embedded}/${images.found} embedded`);
+  res.writeHead(200, {
+    "Content-Type": "application/zip",
+    "Content-Disposition": `attachment; filename="${baseName}-handoff.zip"`,
+    "Cache-Control": "no-store",
+  });
+  fs.createReadStream(zipPath).on("close", () => fs.rmSync(tmp, { recursive: true, force: true })).pipe(res);
 }
 
 // Client-side changes (a manual text edit, or landing on a past undo/redo
@@ -1193,7 +1231,9 @@ function handleFidelityDismiss(req, res) {
 // serveStatic, at HTTP-serve time, never on disk) as a forced download, for
 // the toolbar's "HTML Export" option — a plain copy of the prototype file
 // itself, as opposed to "Diff Export"'s summarized changelog.
-function handleExportHtml(req, res, slug) {
+// The mock on its own: one standalone file (images embedded, first screen
+// showing).
+async function handleExportHtml(req, res, slug) {
   if (!slug) return notFound(res);
   let dir;
   try {
@@ -1201,18 +1241,18 @@ function handleExportHtml(req, res, slug) {
   } catch {
     return notFound(res);
   }
-  fs.readFile(path.join(dir, WORKING_FILE), "utf8", (err, data) => {
-    if (err) return notFound(res);
-    res.writeHead(200, {
-      "Content-Type": "text/html; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${friendlyDownloadName(dir, slug)}.html"`,
-      // The export URL is otherwise byte-identical every time with no
-      // freshness hints, leaving a repeat download eligible to come from cache
-      // and hand back a version older than the file on disk.
-      "Cache-Control": "no-store, must-revalidate",
-    });
-    res.end(data);
+  let data;
+  try { data = fs.readFileSync(path.join(dir, WORKING_FILE), "utf8"); } catch { return notFound(res); }
+  const { html } = await standaloneMock(data);
+  res.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Disposition": `attachment; filename="${friendlyDownloadName(dir, slug)}.html"`,
+    // The export URL is otherwise byte-identical every time with no
+    // freshness hints, leaving a repeat download eligible to come from cache
+    // and hand back a version older than the file on disk.
+    "Cache-Control": "no-store, must-revalidate",
   });
+  res.end(html);
 }
 
 const MIME = { ".html": "text/html; charset=utf-8", ".json": "application/json", ".js": "text/javascript; charset=utf-8", ".woff2": "font/woff2" };
@@ -1848,6 +1888,12 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && url.pathname === "/design-system/generate") {
     return handleDesignSystemGenerate(req, res).catch((err) => sendJson(res, 500, { ok: false, error: err.message }));
   }
+  if (req.method === "GET" && url.pathname === "/export-handoff") {
+    return handleExportHandoff(req, res, url.searchParams.get("slug")).catch((err) => sendJson(res, 500, { error: err.message }));
+  }
+  if (req.method === "GET" && url.pathname === "/design-md") {
+    return handleDesignMd(req, res, url.searchParams.get("slug"));
+  }
   if (req.method === "GET" && url.pathname === "/page-design") {
     return handlePageDesign(req, res, url.searchParams);
   }
@@ -1876,7 +1922,7 @@ const server = http.createServer((req, res) => {
     return handleFidelityDismiss(req, res).catch((err) => sendJson(res, 500, { error: err.message }));
   }
   if (req.method === "GET" && url.pathname === "/export-html") {
-    return handleExportHtml(req, res, url.searchParams.get("slug"));
+    return handleExportHtml(req, res, url.searchParams.get("slug")).catch((err) => sendJson(res, 500, { error: err.message }));
   }
   if (req.method === "GET" && url.pathname === "/version-check") {
     return handleVersionCheck(req, res).catch((err) => sendJson(res, 500, { error: err.message }));

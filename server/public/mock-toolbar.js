@@ -1138,6 +1138,8 @@
       .pm-export-opt { all: unset; box-sizing: border-box; width: 100%; cursor: pointer;
         font-family: inherit; padding: 8px 10px; border-radius: 8px; font-size: 12.5px; color: #d3c2d6; }
       .pm-export-opt:hover { background: rgba(255,61,146,.12); color: #f4eef7; }
+      .pm-export-opt.pm-export-main { color: #f4eef7; font-weight: 600; }
+      .pm-export-opt small { display: block; font-weight: 400; font-size: 11px; color: #8a7d93; margin-top: 1px; }
 
       .pm-dl { display: none; position: fixed; z-index: ${Z}; top: 16px; right: 16px; width: min(360px, calc(100vw - 32px));
         max-height: calc(100vh - 32px); overflow-y: auto; box-sizing: border-box;
@@ -1184,6 +1186,20 @@
         background: linear-gradient(135deg, var(--pm-pink-2), var(--pm-pink-3)); color: #1c0f18;
         box-shadow: 0 10px 30px rgba(255,45,120,.45); }
       .pm-bubble.pm-show { display: flex; }
+      /* While a download is being built: a spinner replaces the Export icon,
+         and the minimized bubble (or the pill) spins a ring, so the wait
+         shows even with the card out of the way. */
+      .pm-export-top .pm-ex-spin { display: none; width: 12px; height: 12px; border-radius: 50%;
+        border: 2px solid rgba(255,159,209,.3); border-top-color: var(--pm-status); animation: pm-spin .7s linear infinite; }
+      .pm-exporting .pm-export-top .pm-ex-spin { display: inline-block; }
+      .pm-exporting .pm-export-top svg { display: none; }
+      .pm-exporting .pm-export-top { color: var(--pm-status); border-color: rgba(255,61,146,.35); pointer-events: none; }
+      .pm-bubble.pm-exporting::before { content: ""; position: absolute; inset: -5px; border-radius: 50%;
+        border: 2.5px solid transparent; border-top-color: #ffffff; border-right-color: #ffffff; animation: pm-spin .8s linear infinite; }
+      .pm-pill .pm-ex-spin { display: none; width: 14px; height: 14px; border-radius: 50%;
+        border: 2px solid rgba(255,159,209,.3); border-top-color: var(--pm-pink-2); animation: pm-spin .7s linear infinite; }
+      .pm-pill.pm-exporting .pm-ex-spin { display: inline-block; }
+      .pm-pill.pm-exporting .pm-sparkle { display: none; }
       .pm-bubble::after { content: ""; position: absolute; inset: -6px; border-radius: 50%;
         border: 1.5px solid rgba(255,110,199,.5); animation: pm-breathe 2.6s ease-in-out infinite; }
 
@@ -1232,12 +1248,13 @@
     <div class="pm-pill" id="pm-pill-open">
       <div class="pm-halo"></div>
       <span class="pm-sparkle">${ICONS.bend}</span>
+      <span class="pm-ex-spin"></span>
       <span class="pm-label">Page Bender</span>
       <span id="pm-pill-dot" class="pm-pill-dot" style="display:none;"></span>
     </div>
     <div class="pm-card">
       <div class="pm-halo2"></div>
-      <button class="pm-export-top" id="pm-export" title="Export the mock: a diff for handoff, or the finished HTML">${ICONS.exportIco} Export</button>
+      <button class="pm-export-top" id="pm-export" title="Export the mock: a diff for handoff, or the finished HTML">${ICONS.exportIco}<span class="pm-ex-spin"></span><span class="pm-ex-label">Export</span></button>
       <button class="pm-min" id="pm-minimize" title="Minimize — keep the mock visible">${ICONS.minimize}</button>
       <button class="pm-stop-top" id="pm-stop" style="display:none;" title="Stop the in-progress AI pass (Esc) — whatever it already changed stays">${ICONS.stopSquare}</button>
       <div class="pm-titlebar">
@@ -1299,8 +1316,10 @@
   exportMenu.id = "pm-export-menu";
   exportMenu.className = "pm-export-menu";
   exportMenu.innerHTML = `
-    <button class="pm-export-opt" data-kind="diff">Diff Export</button>
-    <button class="pm-export-opt" data-kind="html">HTML Export</button>
+    <button class="pm-export-opt pm-export-main" data-kind="handoff">Handoff (.zip)<small>mock, changes and design rules</small></button>
+    <button class="pm-export-opt" data-kind="html">Mock only (.html)</button>
+    <button class="pm-export-opt" data-kind="diff">Changes only (.md)</button>
+    <button class="pm-export-opt" data-kind="design">Design rules (DESIGN.md)</button>
   `;
   document.documentElement.appendChild(exportMenu);
 
@@ -1957,7 +1976,8 @@
       ${borders ? `<h4>Borders</h4>${borders}` : ""}
       ${radii ? `<h4>Corner radii</h4><div class="pm-dl-shapes">${radii}</div>` : ""}
       ${shadows ? `<h4 style="margin-top:22px">Shadows</h4><div class="pm-dl-shapes pm-shadows">${shadows}</div>` : ""}` : `<p class="pm-dl-note">This capture predates measuring. Capture the page again to see its colours, type and shapes.</p>`}
-      <p class="pm-dl-note" style="margin-top:22px">The agent builds with these: it copies the page's own components, and builds what's missing the way ${primary ? esc(primary.name) : "the page's own markup"} would, in these colours, type and shapes.</p>`;
+      <p class="pm-dl-note" style="margin-top:22px"><a href="/design-md?slug=${encodeURIComponent(slug)}" style="color:#ff9fd1">Download these as DESIGN.md</a>, the design rules for whoever builds it for real.</p>
+      <p class="pm-dl-note">The agent builds with these: it copies the page's own components, and builds what's missing the way ${primary ? esc(primary.name) : "the page's own markup"} would, in these colours, type and shapes.</p>`;
     designPanel.querySelector(".pm-dl-close").addEventListener("click", () => { designPanel.classList.remove("pm-open"); highlight([]); });
   }
   designPanel.addEventListener("mouseover", (e) => {
@@ -2025,9 +2045,11 @@
 
   async function doDiffExport() {
     setStatus("building diff…");
+    setExporting(true);
     const resp = await fetch("/diff", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }),
     }).then((r) => r.json()).catch((err) => ({ error: err.message }));
+    setExporting(false);
     if (!resp || resp.error) { setStatus(`diff failed: ${resp && resp.error}`); return; }
     const blob = new Blob([resp.markdown], { type: "text/markdown" });
     const a = document.createElement("a");
@@ -2052,10 +2074,51 @@
     a.click();
     setStatus("html downloaded");
   }
+  function downloadFrom(href, done) {
+    const a = document.createElement("a");
+    a.href = href;
+    a.click();
+    if (done) setStatus(done);
+  }
+  // The handoff zip: saved first (like the HTML export), then built on the
+  // server, which summarises the changes, so it takes a few seconds.
+  function setExporting(on) {
+    for (const el of [cardEl, bubbleEl, pillEl]) el.classList.toggle("pm-exporting", on);
+    const label = toolbar.querySelector(".pm-ex-label");
+    if (label) label.textContent = on ? "Exporting…" : "Export";
+    const pillLabel = pillEl.querySelector(".pm-label");
+    if (pillLabel) pillLabel.textContent = on ? "Exporting…" : "Page Bender";
+  }
+
+  async function doHandoffExport() {
+    setStatus("saving before export…");
+    const ok = await flushSave();
+    if (!ok) { setStatus("export cancelled — the page could not be saved"); return; }
+    setStatus("building the handoff (mock, changes, design rules)…");
+    setExporting(true);
+    try {
+      const res = await fetch(`/export-handoff?slug=${encodeURIComponent(slug)}&t=${Date.now()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const name = ((res.headers.get("content-disposition") || "").match(/filename="([^"]+)"/) || [, `${slug}-handoff.zip`])[1];
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      setStatus("handoff downloaded");
+    } catch (err) {
+      setStatus(`handoff failed: ${err.message}`);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   exportMenu.querySelectorAll(".pm-export-opt").forEach((btn) => {
     btn.addEventListener("click", () => {
       toggleExportMenu(false);
       if (btn.dataset.kind === "diff") doDiffExport();
+      else if (btn.dataset.kind === "handoff") doHandoffExport();
+      else if (btn.dataset.kind === "design") downloadFrom(`/design-md?slug=${encodeURIComponent(slug)}&t=${Date.now()}`, "design rules downloaded");
       else doHtmlExport();
     });
   });

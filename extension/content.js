@@ -173,6 +173,64 @@
       clearTimeout(timer);
     }
   }
+  // Images go inside the capture too, fetched now, while the page is live
+  // and the browser is signed in: fetched later (at export) the source may
+  // be gone or behind a login (seen 5 Oct 2026: a one-click copy had been
+  // torn down and not one of 36 images could be fetched). The page's own
+  // <img> images first, then images its CSS uses, within a size budget so a
+  // capture doesn't balloon. One that can't be fetched stays a link.
+  const IMAGE_MAX_BYTES = 1024 * 1024;
+  const IMAGES_MAX_TOTAL = 8 * 1024 * 1024;
+  const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|ico|avif|bmp)($|[?#])/i;
+  async function fetchImageDataUri(url) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FONT_FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const type = (res.headers.get("content-type") || "").split(";")[0].trim();
+      if (!/^image\//.test(type)) throw new Error("not an image");
+      const buf = await res.arrayBuffer();
+      if (buf.byteLength > IMAGE_MAX_BYTES) throw new Error("too large");
+      let binary = "";
+      const bytes = new Uint8Array(buf);
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return { dataUri: `data:${type};base64,${btoa(binary)}`, bytes: buf.byteLength };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  async function embedImages(html) {
+    const fromImgs = [...html.matchAll(/<img\b[^>]*?\ssrc="(https?:\/\/[^"]+)"/gi)].map((m) => m[1].replace(/&amp;/g, "&"));
+    const fromCss = [...html.matchAll(/url\((['"]?)(https?:\/\/[^'")]+)\1\)/gi)].map((m) => m[2]).filter((u) => IMAGE_EXT.test(u));
+    const list = [...new Set([...fromImgs, ...fromCss])];
+    const done = new Map();
+    let total = 0;
+    let failed = 0;
+    let next = 0;
+    async function worker() {
+      while (next < list.length && total < IMAGES_MAX_TOTAL) {
+        const url = list[next++];
+        try {
+          const r = await fetchImageDataUri(url);
+          if (total + r.bytes > IMAGES_MAX_TOTAL) { failed++; continue; }
+          total += r.bytes;
+          done.set(url, r.dataUri);
+        } catch {
+          failed++;
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: FONT_FETCH_CONCURRENCY }, worker));
+    let out = html;
+    for (const [url, data] of done) {
+      const amp = url.replace(/&/g, "&amp;");
+      out = out.split(`"${amp}"`).join(`"${data}"`).split(`"${url}"`).join(`"${data}"`)
+        .split(`(${url})`).join(`(${data})`).split(`('${url}')`).join(`('${data}')`).split(`("${url}")`).join(`("${data}")`);
+    }
+    return { html: out, diagnostics: { found: list.length, embedded: done.size, failed, bytes: total } };
+  }
+
   async function embedFontFaces(css) {
     const blocks = css.match(/@font-face\s*\{[^}]*\}/g) || [];
     // Per block: its url() tokens, absolutized, in the order to try them.
@@ -746,7 +804,9 @@
     const htmlAttrs = Array.from(document.documentElement.attributes)
       .map((a) => ` ${a.name}="${escapeHtml(a.value)}"`)
       .join("");
-    const html = `<!doctype html>\n<html${htmlAttrs}>\n<head>\n<meta charset="utf-8">\n<title>${escapeHtml(document.title)}</title>\n${styleBlock}${stageStyleBlock}</head>\n${bodyHtml}\n</html>\n`;
+    const rawHtml = `<!doctype html>\n<html${htmlAttrs}>\n<head>\n<meta charset="utf-8">\n<title>${escapeHtml(document.title)}</title>\n${styleBlock}${stageStyleBlock}</head>\n${bodyHtml}\n</html>\n`;
+    const { html, diagnostics: imageDiag } = await embedImages(rawHtml);
+    fontDiagnostics.images = imageDiag;
     return { html, fontDiagnostics };
   }
 
